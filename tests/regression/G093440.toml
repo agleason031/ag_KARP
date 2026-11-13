@@ -13,8 +13,7 @@ combine = true
 normalize = true
 
 [detector]
-amp_data = [[0, 512], [512, 1024]]
-amp_overscan = [[1034, 1074], [1084, 1124]]
+overscan_skip = 10
 gain = [0.6, 0.6]
 readnoise = 5.7
 full_well = 150000
@@ -29,9 +28,10 @@ zeroth_pad = 10
 order = 3
 
 [extraction]
-aperture = 20
-buffer = 20
-background = 25
+# Exactly 20, 20 and 25 columns at BINX = 2 (0.516"/column)
+aperture_arcsec = 10.32
+buffer_arcsec = 10.32
+background_arcsec = 12.9
 method = "optimal"
 sky_order = 1
 profile_window = 101

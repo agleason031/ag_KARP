@@ -97,7 +97,23 @@ bands.
 explanation. Only `[paths]` is required. Unknown settings or values of the wrong type stop KARP
 with an error before anything runs.
 
-Detector defaults (`[detector]`) describe KOSMOS at 2×1 binning: two amplifiers, a gain of
+**Detector layout and binning.** KARP works out each frame's column layout (each amplifier's
+data and overscan columns) from its own header, so any binning works without changing the
+config. It uses the header's DSEC/BSEC sections when they fit the frame. Some KOSMOS headers
+(e.g. the 2×1 test data) carry the unbinned sections whatever the binning; in that case the
+layout is computed from BINX/BINY and the frame size. KOSMOS has two amplifiers, each with
+1024/BINX data columns, followed by 50 overscan columns per amplifier, which don't bin. The
+log records which source was used ([detector.py](detector.py)). `[detector] amp_data` and
+`amp_overscan` override both.
+
+**Sizes are physical, so one config works at any binning.** Widths across the slit
+(`[extraction] aperture_arcsec`, `buffer_arcsec`, `background_arcsec`) are in arcsec, converted
+with `[detector] pixel_scale` (0.258″ per unbinned pixel) and the frames' BINX. Sizes along the
+dispersion (`profile_window`, `[wavecal] search` and `match_tol`, `[flat] zeroth_pad` and
+row ranges) are in unbinned rows, divided by BINY. `[trace] col` is an unbinned CCD column.
+The log lists the resulting sizes in pixels.
+
+The other `[detector]` defaults are two amplifiers with a gain of
 0.6 e⁻/DN from the spec sheet, and 5.7 e⁻ read noise. The flats suggest the gain may be closer
 to 0.72–0.77 e⁻/DN; check this for your data.
 
@@ -171,5 +187,6 @@ written to `tests/regression/runs/`.
 - The Ne and Kr line-list intensity cutoffs haven't been tested on real arcs.
 - On the test data, the [O I] 5577 Å sky line sits about 0.4 Å off the arc solution while
   6300 and 6364 Å agree, so flexure correction defaults to report-only.
-- The detector defaults assume 2×1 binning. Other binnings need their own `[detector]`
-  column ranges.
+- The arc and sky line-finding windows are set in binned pixels. Their right size depends
+  on the line width, which depends on the slit as much as on the binning. They work at 2×1
+  with the 0.87″ slit and at 2×2 with the 2.1″ slit.

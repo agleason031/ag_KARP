@@ -16,10 +16,6 @@ class grapher:
         self.objid = objid # Object ID
         self.target_dir = target_dir # Output directory for this object (ends in "/")
         self.verbose = cfg["output"]["verbose"]
-        ext = cfg["extraction"]
-        self.appw = int(np.round(float(ext["aperture"])-1)/2) # So an appature width inputu of 13 is two 6 pixel sides, and if you put 14 it rounds to 13
-        self.buffw = int(ext["buffer"]) # Width of the buffer in pixels (on either side of the appature, so 4 is two, 4 pix buffers su,etrically spaced around the center line)
-        self.bckw = int(ext["background"]) # The width of the background in pixels, (on either side of the buffer)
 
     def _image(self, image, title, path):
         fig, ax = plt.subplots(figsize=(6, 10))

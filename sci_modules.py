@@ -18,6 +18,8 @@ from wavecal import C_KMS
 from normalize import fit_continuum, load_mask
 from sci_tools import heliocentric_correction, detector_geometry, read_reduced, read_arcs, exposure_info
 import fluxcal
+import detector
+from astropy.io import fits
 from joblib import Parallel, delayed
 import ccdproc
 import logging
@@ -54,15 +56,25 @@ class sci_modules:
         self.objid = group.objid # Object ID
         self.target_dir = target_dir
         ext = cfg["extraction"]
-        self.appw = int(np.round(float(ext["aperture"])-1)/2) # So an appature width inputu of 13 is two 6 pixel sides, and if you put 14 it rounds to 13
-        self.buffw = int(ext["buffer"]) # Width of the buffer in pixels (on either side of the appature, so 4 is two, 4 pix buffers su,etrically spaced around the center line)
-        self.bckw = int(ext["background"]) # The width of the background in pixels, (on either side of the buffer)
+        # Sizes in the config are physical (arcsec across the slit, unbinned rows along the
+        # dispersion); convert them to pixels of this group's binning
+        self.binx, self.biny = detector.setup_binning(group.setup)
+        arcsec_per_col = cfg["detector"]["pixel_scale"] * self.binx
+        # Aperture: 2*appw+1 columns (a width w in pixels uses (w-1)/2 per side, rounded down)
+        self.appw = int(np.round(ext["aperture_arcsec"] / arcsec_per_col - 1) / 2)
+        self.buffw = int(round(ext["buffer_arcsec"] / arcsec_per_col)) # gap between aperture and background, per side
+        self.bckw = int(round(ext["background_arcsec"] / arcsec_per_col)) # background width, per side
         self.extract_method = ext["method"] # "optimal" or "boxcar"
         self.sky_order = ext["sky_order"] # polynomial order of the sky fit across the slit
-        self.profile_window = ext["profile_window"] # rows over which the spatial profile is smoothed
+        # rows over which the spatial profile is smoothed
+        self.profile_window = detector.to_binned(ext["profile_window"], self.biny, odd=True, minimum=3)
+        log.info(f"Binning {self.binx}x{self.biny} ({arcsec_per_col:.3f}\"/column): aperture {2 * self.appw + 1} "
+                 f"columns, buffer {self.buffw}, background {self.bckw} per side; profile window "
+                 f"{self.profile_window} rows")
         self.reject_sigma = ext["reject_sigma"] # optimal extraction outlier threshold
         self.trace_order = cfg["trace"]["order"] # Polynomial order of the trace fit
-        self.trace_col = cfg["trace"]["col"] # Optional starting column for the trace; found automatically if None
+        # Optional starting column for the trace (config: unbinned CCD column); found automatically if None
+        self.trace_col = None if cfg["trace"]["col"] is None else int(cfg["trace"]["col"] // self.binx)
         norm = cfg["normalization"]
         self.knot_spacing = norm["knot_spacing"] # A between continuum spline knots
         self.low_reject = norm["low_reject"] # continuum clipping below the fit, sigma
@@ -103,11 +115,15 @@ class sci_modules:
         self.cen_line_dict = {}
         self.wave_solutions = {} # wavecal.WaveSolution per science frame
         self.flexure_dict = {} # {sky line: offset in A} per science frame
-        self.geom = detector_geometry(cfg["detector"]) # Amplifier layout, overscan columns, gains
+        self.geom = detector_geometry(cfg["detector"]) # [detector] settings; layout read from each frame's header
+        with fits.open(group.science[min(group.science)]) as hdul:
+            log.info(detector.describe(detector.frame_geometry(hdul[0].header, self.geom)))
         # Arc image: overscan-subtracted, trimmed (electrons); repeats median-combined, lamps added
         self.arc_image, header_lamps = read_arcs(group.arcs, self.geom)
         # Wavelength calibration settings
-        self.wcfg = cfg["wavecal"]
+        # [wavecal] with its row sizes (unbinned) converted to this binning
+        self.wcfg = dict(cfg["wavecal"], search=cfg["wavecal"]["search"] / self.biny,
+                         match_tol=cfg["wavecal"]["match_tol"] / self.biny)
         self.arc_lamps = self.wcfg["lamps"] or header_lamps
         if not self.arc_lamps:
             raise ValueError(f"No lamps are on in the arc headers of {group.arcs}; set [wavecal] lamps")
@@ -297,7 +313,8 @@ class sci_modules:
         if scinum in self.wave_solutions:
             return self.wave_solutions[scinum]
         log.debug("Wavelength calibration")
-        arc_spec = wavecal.extract_arc(self.arc_image, cen_line, self.appw)
+        arc_spec = wavecal.extract_arc(self.arc_image, cen_line, self.appw,
+                                       baseline_window=detector.to_binned(101, self.biny, odd=True, minimum=3))
         sol = wavecal.solve(arc_spec, self.arc_lamps, self.wave_reference, self.binning_y, self.wcfg)
         log.info(sol.summary())
         for note in sol.notes:
@@ -659,13 +676,16 @@ class sci_modules:
     
 #-----------------------------------------
     
-    def find_coarse_trace(self, sci_final_1, block=100, search=10):
+    def find_coarse_trace(self, sci_final_1, block=100, search=20):
         """
         Rough trace position for every row, from the peak of the median spatial
         profile in blocks of `block` rows. Starts at the middle of the frame and
         walks outward, looking within +/- `search` columns of the previous block's
         peak, so it follows any tilt. Blocks with no clear peak are interpolated over.
+        block and search are in unbinned pixels.
         """
+        block = detector.to_binned(block, self.biny, minimum=10)
+        search = detector.to_binned(search, self.binx, minimum=2)
         n_rows, n_cols = sci_final_1.shape
         starts = np.arange(0, n_rows, block)
         centers = starts + block / 2

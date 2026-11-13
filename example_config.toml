@@ -42,9 +42,14 @@ fluxcal = true     # optional: flux-calibrate with a standard star of the same s
                    #   (disperser, slit, binning); skipped when there is none
 
 [detector]
-# KOSMOS at 2x1 binning. Column ranges are 0-based and end-exclusive, one per amplifier.
-amp_data = [[0, 512], [512, 1024]]
-amp_overscan = [[1034, 1074], [1084, 1124]]
+# The column layout of each frame (data and overscan of each amplifier) is read from its
+# header (DSEC/BSEC), or computed from its binning when those sections don't fit the frame,
+# so any binning works. To set it by hand instead, give both (raw-frame columns, 0-based,
+# end-exclusive, one range per amplifier):
+# amp_data = [[0, 512], [512, 1024]]
+# amp_overscan = [[1024, 1074], [1074, 1124]]
+overscan_skip = 10      # leading overscan columns left out of each strip (charge-transfer tail)
+pixel_scale = 0.258     # arcsec per unbinned pixel along the slit (spec sheet)
 gain = [0.6, 0.6]       # e-/DN (spec sheet)
 readnoise = 5.7         # e-
 full_well = 150000.0    # e-
@@ -53,21 +58,23 @@ overscan_order = 3
 [flat]
 # The grating's zeroth order crosses the slit as a bright band in the flat-lamp frames;
 # the final flat is set to 1 in those rows so the band doesn't print into the science frames.
-zeroth_order = "auto"    # "auto", "none", or [[row_min, row_max], ...] (inclusive)
+zeroth_order = "auto"    # "auto", "none", or [[row_min, row_max], ...] (inclusive, unbinned rows)
 zeroth_threshold = 0.02  # "auto": bands at least this much (fraction) above the running median
-zeroth_pad = 10          # "auto": rows added on each side of a band
+zeroth_pad = 10          # "auto": unbinned rows added on each side of a band
 
 [trace]
 order = 3      # polynomial order of the trace
-# col = 480    # starting column for the trace search (default: brightest column)
+# col = 960    # starting column for the trace search, unbinned CCD column (default: brightest column)
 
 [extraction]
-aperture = 20     # full aperture width, pixels
-buffer = 20       # gap between aperture and background, pixels per side
-background = 25   # background region width, pixels per side
+# Sizes are physical, so the same settings work at any binning: arcsec across the slit,
+# unbinned rows along the dispersion. The log shows them in pixels.
+aperture_arcsec = 10.0   # full aperture width
+buffer_arcsec = 10.0     # gap between aperture and background, per side
+background_arcsec = 13.0 # background region width, per side
 method = "optimal" # "optimal" (Horne 1986) or "boxcar"
 sky_order = 1      # polynomial order of the sky fit across the slit
-profile_window = 101 # rows over which the spatial profile is smoothed (optimal)
+profile_window = 101 # unbinned rows over which the spatial profile is smoothed (optimal)
 reject_sigma = 5.0 # optimal: leave out pixels deviating by more than this
 
 [cosmic_rays]
@@ -123,8 +130,8 @@ jackknife = false  # also report S/N with each frame left out
 order = "auto"     # polynomial order, or "auto" (best leave-one-out accuracy, orders 2-6)
 lamps = []         # line lists, e.g. ["ARGON", "NEON"]; empty = lamps on in the arc header
 # reference = "calib_data/wavecal/kosmos_blue.json"   # default: by disperser
-search = 200       # largest shift (rows) between the reference and the arc
-match_tol = 3.0    # rows
+search = 200       # largest shift (unbinned rows) between the reference and the arc
+match_tol = 3.0    # unbinned rows
 clip_sigma = 3.0
 min_lines = 8
 max_rms = 15.0     # km/s; a worse solution stops with an error

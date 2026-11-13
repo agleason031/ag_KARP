@@ -30,5 +30,5 @@ karp = "ag_KARP:main"
 # KARP is a set of top-level modules that find calib_data/ next to themselves, so
 # install it in editable mode (pip install -e .) from a clone of the repository.
 [tool.setuptools]
-py-modules = ["ag_KARP", "config", "discover", "extract", "fluxcal", "functions", "grapher",
+py-modules = ["ag_KARP", "config", "detector", "discover", "extract", "fluxcal", "functions", "grapher",
               "normalize", "sci_modules", "sci_tools", "wavecal"]

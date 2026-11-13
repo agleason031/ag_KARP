@@ -49,10 +49,14 @@ DEFAULTS = {
         "fluxcal": True, # Flux-calibrate with a standard star of the same setup (skipped if none)
     },
     "detector": {
-        # KOSMOS at 2x1 binning: two amplifiers split at column 512. Column ranges are
-        # 0-based and end-exclusive; one entry per amplifier.
-        "amp_data": [[0, 512], [512, 1024]],
-        "amp_overscan": [[1034, 1074], [1084, 1124]], # First 10 overscan columns skipped
+        # The column layout (data and overscan of each amplifier) is read from each frame's
+        # header (DSEC/BSEC), or computed from its binning when those sections don't fit
+        # the frame; see detector.py. To set it by hand, give both lists below: column
+        # ranges [[c0, c1], ...] in raw-frame pixels, 0-based, end-exclusive, one per amplifier.
+        "amp_data": None, # e.g. [[0, 512], [512, 1024]] (2x1 and 2x2 binning)
+        "amp_overscan": None, # e.g. [[1024, 1074], [1074, 1124]]
+        "overscan_skip": 10, # Leading overscan columns left out of each strip (charge-transfer tail)
+        "pixel_scale": 0.258, # arcsec per unbinned pixel along the slit (spec sheet)
         "gain": [0.6, 0.6], # e-/DN (spec sheet; flats suggest ~0.72 / ~0.77)
         "readnoise": 5.7, # e- (spec sheet: 6)
         "full_well": 150000.0, # e-
@@ -62,21 +66,23 @@ DEFAULTS = {
         # The zeroth order of the grating crosses the slit as a bright band in the flat-lamp
         # exposures; the final flat is set to 1 in those rows (over the illuminated columns).
         "zeroth_order": "auto", # "auto" (find bright bands in the flat), "none", or
-                                # [[row_min, row_max], ...] (inclusive, trimmed-frame rows)
+                                # [[row_min, row_max], ...] (inclusive, unbinned rows)
         "zeroth_threshold": 0.02, # "auto": rows this much (fraction) above the running median
-        "zeroth_pad": 10, # "auto": rows added on each side of a band
+        "zeroth_pad": 10, # "auto": unbinned rows added on each side of a band
     },
     "trace": {
         "order": 3, # Polynomial order of the trace fit
-        "col": None, # Starting column for the trace search (default: brightest column)
+        "col": None, # Starting column for the trace search, unbinned CCD column (default: brightest column)
     },
     "extraction": {
-        "aperture": 20, # Full aperture width in pixels (an odd width w uses (w-1)/2 per side)
-        "buffer": 20, # Gap between aperture and background region, pixels per side
-        "background": 25, # Background region width, pixels per side
+        # Widths across the slit in arcsec (converted to pixels with [detector] pixel_scale and
+        # the frames' binning; the pixel values are logged)
+        "aperture_arcsec": 10.0, # Full aperture width
+        "buffer_arcsec": 10.0, # Gap between aperture and background region, per side
+        "background_arcsec": 13.0, # Background region width, per side
         "method": "optimal", # "optimal" (Horne 1986) or "boxcar"
         "sky_order": 1, # Polynomial order of the sky fit across the slit (per row)
-        "profile_window": 101, # Rows over which the spatial profile is smoothed (optimal)
+        "profile_window": 101, # Unbinned rows over which the spatial profile is smoothed (optimal)
         "reject_sigma": 5.0, # Optimal extraction: leave out pixels deviating by more than this
     },
     "cosmic_rays": {
@@ -131,8 +137,8 @@ DEFAULTS = {
                          # line from the others (leave-one-out)
         "lamps": [], # Line lists to use, e.g. ["ARGON"] (default: lamps that are on in the arc header)
         "reference": None, # Reference solution file (default: calib_data/wavecal/kosmos_<disperser>.json)
-        "search": 200, # Largest shift (rows) allowed between the reference and this arc
-        "match_tol": 3.0, # Match observed and catalog lines within this many rows
+        "search": 200, # Largest shift (unbinned rows) allowed between the reference and this arc
+        "match_tol": 3.0, # Match observed and catalog lines within this many unbinned rows
         "clip_sigma": 3.0, # Sigma clipping of the fit
         "min_lines": 8, # Fewest matched lines for a solution
         "max_rms": 15.0, # km/s; a worse solution stops with an error (likely misidentified lines)
@@ -181,7 +187,10 @@ def merge(user):
             raise ConfigError(f"[{section}] should be a table")
         for key, value in values.items():
             if key not in DEFAULTS[section]:
-                raise ConfigError(f"Unknown setting [{section}] {key}")
+                hint = ""
+                if section == "extraction" and key in ("aperture", "buffer", "background"):
+                    hint = f" (now {key}_arcsec, in arcsec instead of pixels)"
+                raise ConfigError(f"Unknown setting [{section}] {key}{hint}")
             cfg[section][key] = _check_type(section, key, value, DEFAULTS[section][key])
     for section, values in cfg.items():
         for key, value in values.items():
@@ -214,8 +223,18 @@ def merge(user):
         raise ConfigError('[flat] zeroth_order should be "auto", "none" or [[row_min, row_max], ...]')
 
     det = cfg["detector"]
-    if not (len(det["amp_data"]) == len(det["amp_overscan"]) == len(det["gain"])):
-        raise ConfigError("[detector] amp_data, amp_overscan and gain need one entry per amplifier")
+    pairs = lambda v: isinstance(v, list) and all(
+        isinstance(r, list) and len(r) == 2 and all(isinstance(c, int) for c in r) and r[0] < r[1] for r in v)
+    if (det["amp_data"] is None) != (det["amp_overscan"] is None):
+        raise ConfigError("[detector] amp_data and amp_overscan must be given together (or neither)")
+    if det["amp_data"] is not None:
+        if not (pairs(det["amp_data"]) and pairs(det["amp_overscan"])):
+            raise ConfigError("[detector] amp_data and amp_overscan should be [[c0, c1], ...] column ranges")
+        if not (len(det["amp_data"]) == len(det["amp_overscan"]) == len(det["gain"])):
+            raise ConfigError("[detector] amp_data, amp_overscan and gain need one entry per amplifier")
+    ext = cfg["extraction"]
+    if not (ext["aperture_arcsec"] > 0 and ext["buffer_arcsec"] >= 0 and ext["background_arcsec"] > 0):
+        raise ConfigError("[extraction] aperture_arcsec and background_arcsec must be > 0, buffer_arcsec >= 0")
     return cfg
 
 

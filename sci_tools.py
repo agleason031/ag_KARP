@@ -14,6 +14,7 @@ from astropy.nddata import CCDData
 from numpy.polynomial import Chebyshev
 import numpy as np
 import ccdproc
+import detector
 import hashlib
 import logging
 import os
@@ -64,23 +65,26 @@ def exposure_info(header, site_height=2788.0, ra=None, dec=None):
     return exptime, float(1 / np.sin(alt.radian)), float(t.utc.mjd)
 
 # Bump when the way master calibrations are built changes, so old files on disk are rebuilt
-CAL_VERSION = 4 # 2: overscan subtraction, trimming and per-amplifier gain; 3: flat bias/scaling order;
-                # 4: zeroth-order rows found from the flat (or set in [flat])
+CAL_VERSION = 5 # 2: overscan subtraction, trimming and per-amplifier gain; 3: flat bias/scaling order;
+                # 4: zeroth-order rows found from the flat (or set in [flat]); 5: layout from each header
 
 def detector_geometry(det):
     """
-    The parts of the [detector] config that define how raw frames are turned into
-    trimmed, overscan-subtracted electron images (see config.py for the defaults).
+    The [detector] settings that define how raw frames become trimmed, overscan-
+    subtracted electron images. Each frame's column layout is worked out from its own
+    header when it is read (detector.frame_geometry), so any binning works.
     """
-    return {k: det[k] for k in ("amp_data", "amp_overscan", "gain", "overscan_order")}
+    return {k: det[k] for k in ("amp_data", "amp_overscan", "overscan_skip", "gain", "overscan_order")}
 
-def overscan_trim(ccd, geom):
+def overscan_trim(ccd, det):
     """
     For each amplifier: subtract its overscan level (row-by-row median of its overscan
     strip, smoothed along the rows with a Chebyshev polynomial of order
-    geom["overscan_order"] and one 5-sigma clipping pass), convert to electrons with
-    its gain, and keep only the data columns. Returns CCDData in electrons.
+    det["overscan_order"] and one 5-sigma clipping pass), convert to electrons with
+    its gain, and keep only the data columns and rows. The layout comes from the frame's
+    header (see detector.py). Returns CCDData in electrons.
     """
+    geom = detector.frame_geometry(ccd.meta, det)
     data = np.asarray(ccd.data, dtype=float)
     rows = np.arange(data.shape[0])
     n_cols = max(c1 for _, c1 in geom["amp_data"])
@@ -92,11 +96,12 @@ def overscan_trim(ccd, geom):
         keep = np.abs(resid) < 5 * mad_std(resid)
         model = Chebyshev.fit(rows[keep], level[keep], geom["overscan_order"])
         out[:, c0:c1] = (data[:, c0:c1] - model(rows)[:, None]) * gain
-    return CCDData(out, unit="electron", meta=ccd.meta)
+    r0, r1 = geom["rows"]
+    return CCDData(out[r0:r1], unit="electron", meta=ccd.meta)
 
-def read_reduced(path, geom):
+def read_reduced(path, det):
     """Read a raw frame, subtract overscan, trim, and convert to electrons."""
-    return overscan_trim(CCDData.read(path, unit="adu"), geom)
+    return overscan_trim(CCDData.read(path, unit="adu"), det)
 
 def calibration_key(bias_files, flat_files, geom, flat_cfg):
     """
@@ -217,18 +222,23 @@ def get_cal_images(bias_files, flat_files, geom, flat_cfg, grapher):
     # Zeroth order: a bright band across the slit in the flat-lamp exposure. The
     # smoothing can't follow its sharp edges, so it would print into the science
     # frames; set the flat to 1 there (over the illuminated columns).
+    # Row sizes in the config are unbinned rows; convert to this binning
+    _, biny = detector.binning(flist[0].meta)
     zo = flat_cfg["zeroth_order"]
     if zo == "auto":
-        rows, bands = find_bright_rows(np_mfdb, flat_cfg["zeroth_threshold"], pad=flat_cfg["zeroth_pad"])
+        pad = detector.to_binned(flat_cfg["zeroth_pad"], biny, minimum=0)
+        rows, bands = find_bright_rows(np_mfdb, flat_cfg["zeroth_threshold"],
+                                       min_width=detector.to_binned(4, biny, minimum=2), pad=pad,
+                                       window=detector.to_binned(101, biny, odd=True, minimum=3))
         found = ", ".join(f"{r0}-{r1}" for r0, r1 in bands) or "none"
         log.info(f"Zeroth order in the flat: bright rows {found}; flat set to 1 in {int(rows.sum())} rows "
-                 f"(padded by {flat_cfg['zeroth_pad']})")
-    else: # "none" or explicit [[row_min, row_max], ...] (inclusive)
+                 f"(padded by {pad})")
+    else: # "none" or explicit [[row_min, row_max], ...] (inclusive, unbinned rows)
         rows = np.zeros(np_mfdb.shape[0], dtype=bool)
         for r0, r1 in ([] if zo == "none" else zo):
-            rows[int(r0):int(r1) + 1] = True
+            rows[int(r0) // biny:int(r1) // biny + 1] = True
         if rows.any():
-            log.info(f"Flat set to 1 in rows {zo}")
+            log.info(f"Flat set to 1 in unbinned rows {zo} ({int(rows.sum())} rows at binning y = {biny})")
     final_flat[np.ix_(rows, illuminated_columns(np_mfdb))] = 1
 
     if grapher.verbose:

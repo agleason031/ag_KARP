@@ -21,6 +21,8 @@ import numpy as np
 from astropy.io import fits
 from astropy.time import Time
 
+import detector
+
 LAMPS = ("ARGON", "NEON", "KRYPTON")
 ARC_SEQUENCE_HOURS = 1.0 # arcs with the same lamps this close to the chosen one are combined with it
 
@@ -88,12 +90,13 @@ def read_frame(path, h=None):
     )
 
 
-def scan(raw_dir, pattern="*.fits", raw_width=None):
+def scan(raw_dir, pattern="*.fits", det=None):
     """
     Read the headers of all matching frames in raw_dir, sorted by frame number.
     `pattern` may use ** to search subdirectories (e.g. "**/*.fits"). Files that aren't
-    2D images `raw_width` columns wide (the raw frame width, overscan included) are
-    skipped. Returns (frames, skipped), skipped being [(path, reason)].
+    raw KOSMOS frames (not 2D, or a size that doesn't fit the detector layout for their
+    binning; det is the [detector] config) are skipped. Returns (frames, skipped),
+    skipped being [(path, reason)].
     """
     paths = sorted(glob.glob(os.path.join(raw_dir, pattern), recursive=True))
     if not paths:
@@ -101,10 +104,18 @@ def scan(raw_dir, pattern="*.fits", raw_width=None):
     frames, skipped = [], []
     for p in paths:
         h = fits.getheader(p)
-        if h.get("NAXIS") != 2 or (raw_width is not None and h.get("NAXIS1") != raw_width):
-            shape = "x".join(str(h.get(f"NAXIS{i}")) for i in range(h.get("NAXIS", 0), 0, -1)) or "no data"
+        shape = "x".join(str(h.get(f"NAXIS{i}")) for i in range(h.get("NAXIS", 0), 0, -1)) or "no data"
+        if h.get("NAXIS") != 2:
             skipped.append((p, f"not a raw frame (shape {shape})"))
             continue
+        if det is not None:
+            try:
+                geom = detector.frame_geometry(h, det)
+                if max(c1 for _, c1 in geom["amp_overscan"]) > h["NAXIS1"]:
+                    raise detector.GeometryError("the [detector] columns run past the frame edge")
+            except detector.GeometryError as err:
+                skipped.append((p, f"not a raw frame (shape {shape}): {err}"))
+                continue
         frames.append(read_frame(p, h))
     missing = [f.path for f in frames if f.num is None]
     if missing:
@@ -200,7 +211,6 @@ def build_groups(frames, fcfg):
 
 def discover(cfg):
     """Scan cfg['paths']['raw_dir'] and return (groups, problems)."""
-    raw_width = max(o1 for _, o1 in cfg["detector"]["amp_overscan"]) # overscan runs to the frame edge
-    frames, skipped = scan(cfg["paths"]["raw_dir"], cfg["paths"]["pattern"], raw_width)
+    frames, skipped = scan(cfg["paths"]["raw_dir"], cfg["paths"]["pattern"], cfg["detector"])
     groups, problems = build_groups(frames, cfg["frames"])
     return groups, problems + [f"{os.path.relpath(p, cfg['paths']['raw_dir'])}: {why}" for p, why in skipped]
