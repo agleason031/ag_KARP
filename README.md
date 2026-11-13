@@ -57,7 +57,7 @@ extractions, are skipped. Each group is written to `output_dir/<OBJNAME>/`.
 | Cosmic rays | L.A.Cosmic on each 2D frame (`[cosmic_rays]`). |
 | Trace | Coarse peak tracking, Gaussian fits per row, then a clipped polynomial (`[trace]`). |
 | Extraction | Sky fit per row across both background windows. Optimal extraction (Horne 1986) uses a smoothed data-derived profile and outlier rejection; boxcar is also available. Errors come from a per-pixel variance image (Poisson + read noise, through the flat). See `[extraction]`. |
-| Wavelength calibration | The arc is extracted along each frame's trace and its lines are found and centroided. They are identified against NIST line lists starting from a stored reference solution, then fit with a clipped polynomial (order chosen automatically by default). Night-sky lines are measured to check flexure, which can be reported or corrected. A heliocentric correction is applied to each frame from its header. See `[wavecal]`. |
+| Wavelength calibration | The arc is extracted along each frame's trace and its lines are found and centroided. Features much wider or narrower than a typical line (ghosts, blends) and lines on the wing of a much brighter line are left out. They are identified against NIST line lists starting from a stored reference solution, then fit with a clipped polynomial (order chosen automatically by default). Night-sky lines are measured to check flexure, which can be reported or corrected. A heliocentric correction is applied to each frame from its header. See `[wavecal]`. |
 | Combine | Frames are interpolated onto the best frame's wavelength grid and scaled to it with a smooth function of wavelength. The default combination is an inverse-variance weighted mean with outlier rejection based on the errors; plain mean and median are also available. See `[combine]`. |
 | Flux calibration (optional) | Uses a spectrophotometric standard observed with the same disperser, slit and binning, recognized by its OBJNAME. Its combined spectrum is converted to a count rate per Å and corrected for extinction (APO curve, mid-exposure airmass). It is compared with the tabulated flux (HST CALSPEC) at matched resolution: at each wavelength the sharper of the two is smoothed to the other's resolution, after a fitted wavelength offset between the standard and its tabulated spectrum is taken out. The ratio is the sensitivity, which is fit with a spline that leaves out line cores and telluric bands. It is applied to every object with that setup, using the standard nearest in time. Objects with no matching standard are not flux calibrated. See `[fluxcal]`. |
 | Normalization (optional) | A cubic spline continuum with asymmetric sigma clipping and a line mask (`[normalization]`). It isn't required for a valid reduction; turn it off with `[steps] normalize = false`. |
@@ -224,10 +224,12 @@ written to `tests/regression/runs/`.
 - Arcs taken far from the science pointing can be offset by flexure. `[wavecal] flexure =
   "correct"` shifts the solution by the night-sky line offset, but that's a single shift and
   can't fix an offset that changes with wavelength. Arcs taken at the science pointing are best.
-- The Ne line list hasn't been tested on real arcs, and the Kr list only on one night with
-  the blue grating (a krypton-only solution is weakly constrained below 4270 Å).
-- On the test data, the [O I] 5577 Å sky line sits about 0.4 Å off the arc solution while
-  6300 and 6364 Å agree, so flexure correction defaults to report-only.
+- The Ne line list hasn't been tested on real arcs. The Kr list has been tested on one night
+  with the blue grating and the 2.1″ slit; Kr has only two usable lines below 4270 Å, so an
+  argon or neon arc as well makes the blue end of the solution firmer.
+- The [O I] 5577 Å sky line comes out 0.4–0.6 Å below the 6300/6364 Å lines on both test
+  nights (argon and krypton arcs), which points at the sky-line measurement, not the arc
+  solution. The flexure check uses the median of the lines and defaults to report-only.
 - The arc and sky line-finding windows are set in binned pixels. Their right size depends
   on the line width, which depends on the slit as much as on the binning. They work at 2×1
   with the 0.87″ slit and at 2×2 with the 2.1″ slit.

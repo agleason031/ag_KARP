@@ -4,7 +4,9 @@ Wavelength calibration for KARP.
 Steps, for each science frame:
   1. Extract the arc spectrum along the science trace, through the same aperture,
      with the local background removed (extract_arc).
-  2. Find the arc emission lines and centroid them with Gaussian fits (find_arc_lines).
+  2. Find the arc emission lines and centroid them with Gaussian fits, leaving out
+     features much wider or narrower than a typical line (ghosts, blends) and lines on
+     the wing of a much brighter one (find_arc_lines).
   3. Start from a rough solution for the grating (a reference file in
      karp/data/wavecal/), and find the shift and stretch that line up the most
      catalog lines with the observed ones (initial_guess).
@@ -21,6 +23,7 @@ JSON files with a list of [row, wavelength] pairs; make one for a new grating wi
 Wavelengths are in air, in Angstroms. Rows are detector rows of the trimmed frame.
 """
 import json
+import warnings
 import os
 from dataclasses import dataclass, field
 
@@ -121,36 +124,123 @@ def extract_arc(arc, columns, aperture_half, baseline_window=101):
     return np.where(good, spec - baseline, np.nan)
 
 
-def find_arc_lines(spec, nsigma=5.0, min_sep=3, half_window=5, max_sigma=5.0):
+def _half_max_width(y, p):
+    """Full width at half maximum (rows) of the peak at index p, from the half-maximum crossings."""
+    half = y[p] / 2
+    lo = p
+    while lo > 0 and y[lo] > half:
+        lo -= 1
+    hi = p
+    while hi < len(y) - 1 and y[hi] > half:
+        hi += 1
+    return hi - lo
+
+
+def find_arc_lines(spec, nsigma=5.0, min_sep=2, max_sigma=8.0, width_range=(0.7, 1.3), min_rel_prominence=0.2):
     """
-    Emission lines in a 1D arc spectrum. Peaks more prominent than nsigma times the
-    noise are centroided with a Gaussian + constant fit over +/- half_window rows.
-    Returns (rows, amplitudes, sigmas) for lines whose fit converged.
+    Emission lines in a 1D arc spectrum.
+      1. Peaks more prominent than nsigma times the noise and than min_rel_prominence
+         times their own height. With a wide slit the lines are flat-topped (the image
+         of the slit), and noise on the top makes extra local maxima; those rise only a
+         little above the dip that separates them from the line's highest point, so
+         they fail the relative test, while separate lines pass it.
+      2. The typical line width W (FWHM, rows) from the 20 most prominent peaks.
+      3. Each line is centroided with a Gaussian fit (the baseline is already removed):
+         first in a window of +/- max(5, 1.5 W) rows that stops halfway to the
+         neighbouring peaks (so a fit can't slide onto a brighter neighbour), then (three
+         times) over the full window with the neighbours' fits subtracted (so a close neighbour
+         doesn't truncate or pull it). Fits that land within W/2 of each other are merged.
+      4. Dropped: fits much wider or narrower than the median (outside width_range
+         times the median FWHM: ghosts and scattered light are broad, blends are broad
+         or lopsided), and lines within 2 W of one more than three times as bright (on its
+         wing). They would bias the solution if matched to a catalog line.
+    Returns (rows, amplitudes, sigmas, info), info = {"fwhm": median FWHM in rows,
+    "found": lines before these cuts, "too_wide", "too_narrow", "crowded": numbers dropped}.
     """
+    empty = (np.array([]), np.array([]), np.array([]),
+             {"fwhm": np.nan, "found": 0, "too_wide": 0, "too_narrow": 0, "crowded": 0})
     good = np.isfinite(spec)
     filled = np.where(good, spec, np.nanmedian(spec))
     noise = mad_std(np.diff(filled[good])) / np.sqrt(2)
-    peaks, _ = find_peaks(filled, prominence=nsigma * noise, distance=min_sep)
+    peaks, props = find_peaks(filled, prominence=nsigma * noise, distance=min_sep)
+    height = filled[peaks] - np.median(filled)
+    distinct = props["prominences"] >= min_rel_prominence * np.maximum(height, 0)
+    peaks, prom = peaks[distinct], props["prominences"][distinct]
+    if len(peaks) == 0:
+        return empty
+    strongest = peaks[np.argsort(prom)[::-1][:20]]
+    width = float(np.median([_half_max_width(filled - np.median(filled), p) for p in strongest]))
+    half_window = max(5, int(np.ceil(1.5 * width)))
 
     x_all = np.arange(len(spec))
-    rows, amps, sigs = [], [], []
-    for p in peaks:
-        lo, hi = max(0, p - half_window), min(len(spec), p + half_window + 1)
-        x, y = x_all[lo:hi], filled[lo:hi]
-        bck0 = np.min(y)
-        w = y - bck0
-        mu0 = np.sum(x * w) / np.sum(w) # flux-weighted centroid as the starting point
-        p0 = [y.max() - bck0, mu0, 1.5, bck0]
+
+    def fit_one(x, y, p0):
+        """Gaussian (background fixed at zero: the baseline is already removed); None if the fit fails."""
         try:
-            # Unbounded Levenberg-Marquardt is much faster than a bounded fit; bad fits are rejected below
-            popt, _ = curve_fit(_gauss, x, y, p0=p0, maxfev=400)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                # Unbounded Levenberg-Marquardt is much faster than a bounded fit; bad fits are rejected below
+                popt, _ = curve_fit(lambda x, a, mu, sigma: _gauss(x, a, mu, sigma, 0.0), x, y, p0=p0, maxfev=400)
         except RuntimeError:
-            continue
+            return None
         a, mu, sigma = popt[0], popt[1], abs(popt[2])
-        if a <= 0 or not (lo <= mu <= hi - 1) or not (0.3 <= sigma <= max_sigma):
+        if a <= 0 or not (x[0] <= mu <= x[-1]) or not (0.3 <= sigma <= max_sigma):
+            return None
+        return a, mu, sigma
+
+    # Pass 1: each line in a window that stops halfway to its neighbours
+    first = []
+    for k, p in enumerate(peaks):
+        left = (p + peaks[k - 1]) // 2 + 1 if k > 0 else 0
+        right = (p + peaks[k + 1]) // 2 if k < len(peaks) - 1 else len(spec) - 1
+        lo, hi = max(0, p - half_window, left), min(len(spec), p + half_window + 1, right + 1)
+        x, y = x_all[lo:hi], filled[lo:hi]
+        w = np.clip(y, 0, None)
+        if hi - lo < 4 or w.sum() <= 0:
+            first.append(None)
             continue
-        rows.append(mu); amps.append(a); sigs.append(sigma)
-    return np.array(rows), np.array(amps), np.array(sigs)
+        first.append(fit_one(x, y, [y.max(), np.sum(x * w) / w.sum(), max(width / 2.3548, 0.5)]))
+
+    # Pass 2 (repeated): refit each line over its full window with its neighbours'
+    # latest fits subtracted, so a nearby line neither pulls the fit nor truncates the window
+    current = list(first)
+    for _ in range(3):
+        updated = []
+        for k, p in enumerate(peaks):
+            if current[k] is None:
+                updated.append(None)
+                continue
+            lo, hi = max(0, p - half_window), min(len(spec), p + half_window + 1)
+            x = x_all[lo:hi]
+            y = filled[lo:hi].copy()
+            for j, f in enumerate(current):
+                if j != k and f is not None and abs(f[1] - p) < half_window + 4 * f[2]:
+                    y -= _gauss(x, f[0], f[1], f[2], 0.0)
+            refit = fit_one(x, y, list(current[k]))
+            updated.append(refit if refit is not None else current[k])
+        current = updated
+    fits = [(f[1], f[0], f[2]) for f in current if f is not None]
+    if not fits:
+        return empty
+
+    # Merge fits that converged on the same line (keep the brighter)
+    fits.sort(key=lambda f: f[1], reverse=True)
+    kept = []
+    for f in fits:
+        if all(abs(f[0] - g[0]) > width / 2 for g in kept):
+            kept.append(f)
+    kept.sort()
+    rows, amps, sigs = (np.array(v) for v in zip(*kept))
+
+    ratio = sigs / np.median(sigs)
+    too_wide, too_narrow = ratio > width_range[1], ratio < width_range[0]
+    # A line within 2 W of one more than three times as bright sits on that line's wing; the
+    # line shape isn't exactly Gaussian, so its centroid can't be trusted
+    crowded = np.array([np.any((np.abs(rows - r) < 2 * width) & (amps > 3 * a)) for r, a in zip(rows, amps)])
+    keep = ~too_wide & ~too_narrow & ~crowded
+    info = {"fwhm": float(2.3548 * np.median(sigs)), "found": len(rows), "too_wide": int(too_wide.sum()),
+            "too_narrow": int(too_narrow.sum()), "crowded": int((crowded & ~too_wide & ~too_narrow).sum())}
+    return rows[keep], amps[keep], sigs[keep], info
 
 
 # ---------------------------------------------------------------------------
@@ -301,9 +391,11 @@ def solve(arc_spec, lamps, reference, binning_y, wcfg):
     catalog = catalog_all[(catalog_all > lam_lo - margin) & (catalog_all < lam_hi + margin)]
     catalog = remove_blends(catalog, 2.5 * disp)
 
-    rows, amps, sigs = find_arc_lines(arc_spec, nsigma=wcfg["peak_sigma"])
+    rows, amps, sigs, found = find_arc_lines(arc_spec, nsigma=wcfg["peak_sigma"])
     if len(rows) < wcfg["min_lines"]:
         raise RuntimeError(f"Only {len(rows)} arc lines found (need {wcfg['min_lines']})")
+    line_note = (f"{found['found']} arc lines found (FWHM {found['fwhm']:.1f} rows); left out: {found['too_wide']} "
+                 f"much wider, {found['too_narrow']} much narrower, {found['crowded']} next to a brighter line")
     guess, shift, stretch, _ = initial_guess(rows, amps, catalog, poly0, n_rows,
                                              wcfg["search"], wcfg["match_tol"])
 
@@ -316,6 +408,7 @@ def solve(arc_spec, lamps, reference, binning_y, wcfg):
 
     if wcfg["order"] != "auto":
         sol = attempt(wcfg["order"])
+        sol.notes = [line_note]
     else:
         # Automatic order: the one that best predicts every matched line from the others
         best, notes = None, []
@@ -334,7 +427,7 @@ def solve(arc_spec, lamps, reference, binning_y, wcfg):
         if best is None:
             raise RuntimeError("No polynomial order gave a usable wavelength solution")
         sol = best[1]
-        sol.notes = notes + [f"chose order {sol.poly.degree()}"]
+        sol.notes = [line_note] + notes + [f"chose order {sol.poly.degree()}"]
 
     if sol.rms_kms > wcfg["max_rms"]:
         raise RuntimeError(f"Wavelength solution RMS {sol.rms_kms:.1f} km/s exceeds [wavecal] max_rms "
