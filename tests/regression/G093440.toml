@@ -42,6 +42,17 @@ boxcar = 70
 clip_regions = []
 jackknife = false
 
+[wavecal]
+order = "auto"
+search = 200
+match_tol = 3.0
+clip_sigma = 3.0
+min_lines = 8
+max_rms = 15.0
+peak_sigma = 5.0
+flexure = "report"
+sky_lines = [5577.338, 6300.304, 6363.776]
+
 [output]
 verbose = false
 sound = false

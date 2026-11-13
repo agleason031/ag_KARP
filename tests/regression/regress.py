@@ -93,7 +93,13 @@ def snapshot(sm, out_dir):
     for n in sorted(sm.cen_line_dict):
         snap[f"v_helio_{n}"] = np.array([sm.v_helio_dict[n]])
         snap[f"cen_line_{n}"] = np.asarray(sm.cen_line_dict[n])
-        snap[f"arc_centers_{n}"] = np.array([fit[1] for fit in sm.lam_fit_dict[n]])
+        sol = sm.wave_solutions[n]
+        snap[f"arc_centers_{n}"] = sol.rows[sol.used]
+        snap[f"arc_lam_{n}"] = sol.lam[sol.used]
+        snap[f"arc_rms_kms_{n}"] = np.array([sol.rms_kms])
+        if n in sm.flexure_dict:
+            offs = sm.flexure_dict[n]
+            snap[f"sky_offsets_{n}"] = np.array([[l, offs.get(l, np.nan)] for l in sm.sky_lines])
         snap[f"flux_raw_{n}"] = np.asarray(sm.flux_raw_cor1_dict[n])
         snap[f"sky_raw_{n}"] = np.asarray(sm.sky_raw_dict[n])
         snap[f"wavelengths_{n}"] = np.asarray(sm.wavelengths_dict[n])

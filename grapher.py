@@ -187,6 +187,7 @@ class grapher:
         axL.set_ylabel("Angstroms")
         
         plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"LamCalRes_"+str(scinum)+".png")
+        plt.close(fig)
         
     def lam_cal_res_vel(self, pixc, res_vel, scinum):
         plt.cla()
@@ -197,6 +198,7 @@ class grapher:
         axV.set_ylabel("km/s")
         
         plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"LamCalRes_Velocity_"+str(scinum)+".png")
+        plt.close(fig)
     
     def plot_cen_line(self, cen_line, scinum):
         fig, axcs = plt.subplots(1, 1, figsize=(8,6))

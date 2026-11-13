@@ -6,15 +6,16 @@ Created on Wed Jun  4 15:52:33 2025
 @author: agleason
 """
 from tqdm import tqdm
-from scipy.optimize import curve_fit
 from scipy.ndimage import uniform_filter
 from scipy.interpolate import interp1d
 from astropy.nddata import CCDData
 from astropy.table import Table
 from astropy.stats import mad_std
 from numpy.polynomial import Polynomial
-from functions import fit_cent_gaussian, G, build_fit_args, gaussian_integral_vec
-from functions import y_lam, con_lam
+from functions import fit_cent_gaussian, build_fit_args, gaussian_integral_vec
+from functions import con_lam
+import wavecal
+from wavecal import C_KMS
 from sci_tools import heliocentric_correction, fit_all_fluxes, detector_geometry, read_reduced
 from joblib import Parallel, delayed
 import ccdproc
@@ -72,11 +73,22 @@ class sci_modules:
         self.sky_raw_dict = {}
         self.sci_final_dict = {}
         self.cen_line_dict = {}
-        self.lam_fit_dict = {}
-        self.lam_fit_linenum_dict = {}
+        self.wave_solutions = {} # wavecal.WaveSolution per science frame
+        self.flexure_dict = {} # {sky line: offset in A} per science frame
         self.geom = detector_geometry(cfg["detector"]) # Amplifier layout, overscan columns, gains
         # Arc frame, overscan-subtracted and trimmed (electrons)
-        self.argon = np.asarray(read_reduced(group.arc, self.geom).data)
+        arc = read_reduced(group.arc, self.geom)
+        self.argon = np.asarray(arc.data)
+        # Wavelength calibration settings
+        self.wcfg = cfg["wavecal"]
+        self.arc_lamps = self.wcfg["lamps"] or [
+            l for l in wavecal.LAMP_FILES if str(arc.meta.get(l, "off")).strip().lower() == "on"]
+        if not self.arc_lamps:
+            raise ValueError(f"No lamps are on in the arc header of {group.arc}; set [wavecal] lamps")
+        self.wave_reference = wavecal.load_reference(group.setup[0], self.wcfg["reference"])
+        self.binning_y = int(group.setup[2].split("x")[1]) # Binning along the dispersion (rows)
+        self.flexure = self.wcfg["flexure"]
+        self.sky_lines = self.wcfg["sky_lines"]
         
     #does all the image reduction through wavelength calibration
     def reduce_image(self, scinum, masterbias, final_flat, verbose):
@@ -208,12 +220,6 @@ class sci_modules:
     #--------------------------------------
     #wavelength calibration
         
-        pixc = [250,295,765,925,953,1275,1330,1396,1480,2870,3355,3421,3612,3780]
-        lam = [6416.31,6384.72,6032.13,5912.09,5888.58,5650.70,5606.73,5558.70,5495.87,4510.73,4200.67,4158.59,4044.42,3948.97]
-
-        # Lambda calibration
-        print("Fitting lambda Gaussians...")
-
         # Drop rows with failed or non-positive extractions, but remember the
         # detector row of every kept pixel so the wavelength solution is
         # evaluated at the right place (NaN > 0 is False, so failed rows drop too)
@@ -224,109 +230,66 @@ class sci_modules:
         flux_raw_cor1 = flux_raw1[ii]
         sky_raw1 = sky_raw1[ii]
 
-        if scinum in self.lam_fit_dict:
-            lam_fit = self.lam_fit_dict[scinum]
-            lam_fit_linenum = self.lam_fit_linenum_dict[scinum]
-        else:
-            lam_fit = [] # Fit parameters [a, mu, sig, bck] of each successfully fit line
-            lam_fit_linenum = [] # Lab wavelength of each successfully fit line
-            for p, l in zip(pixc, lam):
-                # Use the arc column under the trace at this line's row
-                popt = self.fit_arc_line(cen_line[p], p, verbose)
-                if popt is None:
-                    print(f"Arc line {l} A near pixel {p} could not be fit, skipping it")
-                    continue
-                lam_fit.append(popt)
-                lam_fit_linenum.append(l)
+        # Wavelength solution from the arc, extracted along this frame's trace
+        sol = self.wavelength_solution(scinum, cen_line, verbose)
+        poly = sol.poly # row -> air wavelength, before flexure and heliocentric corrections
 
-            if (verbose == True):
-                print("KARP fitted ", len(lam_fit), " lines")
-                print("Argon Lines Fit Parameters:")
-                with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                    f.write("KARP fitted"+str(len(lam_fit))+"lines\n")
-                    f.write("Argon Lines Fit Parameters:\n")
+        # Flexure check: night-sky emission lines in this frame's background
+        offset = 0.0 # A, subtracted from the arc solution when flexure = "correct"
+        if self.flexure != "off":
+            sky_spec = wavecal.extract_sky(sci_final_1, cen_line, self.appw, self.buffw, self.bckw)
+            offs = wavecal.sky_offsets(sky_spec, poly, self.sky_lines)
+            self.flexure_dict[scinum] = offs
+            if offs:
+                # Median, so one discrepant line can't drive a correction
+                med_off = float(np.median(list(offs.values())))
+                med_kms = float(np.median([o / l * C_KMS for l, o in offs.items()]))
+                spread = max(offs.values()) - min(offs.values())
+                details = ", ".join(f"{l:.1f} A: {o:+.3f} A" for l, o in offs.items())
+                msg = f"Flexure check (sky line minus arc solution): {details}; median {med_off:+.3f} A = {med_kms:+.1f} km/s"
+                if spread > 0.2:
+                    msg += f" (WARNING: sky lines disagree by {spread:.2f} A)"
+                if self.flexure == "correct":
+                    offset = med_off
+                    msg += " (corrected)"
+            else:
+                msg = "Flexure check: no night-sky lines detected"
+            print(msg)
+            with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
+                f.write(msg + "\n")
 
-                s_lsp = [] # Sigmas of the lam line fits for the line split function
-                for i in range(len(lam_fit)):
-                    a, mu, sigma, bck = lam_fit[i]
-                    s_lsp.append(sigma)
-                    print("Lam Line Number:",i," lam:",lam_fit_linenum[i]," a:",a," mu:",mu," sig:",sigma," bck:",bck)
-                    with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                        f.write("Lam Line Number:"+str(i)+" lam:"+str(lam_fit_linenum[i])+" a:"+str(a)+" mu:"+str(mu)+" sig:"+str(sigma)+" bck:"+str(bck)+"\n")
-
-                print("Line Split Function:",np.mean(s_lsp))
-                print("(avg of sig of line fits)")
-                with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                    f.write("Line Split Function:"+str(np.mean(s_lsp))+"\n")
-                    f.write("(avg of sig of line fits)\n")
-
-            self.lam_fit_dict[scinum] = lam_fit
-            self.lam_fit_linenum_dict[scinum] = lam_fit_linenum
-
-        cfits = np.array([fit[1] for fit in lam_fit]) # Fitted line centers in pixels
-        lam_ok = np.array(lam_fit_linenum) # Lab wavelengths of the same lines
-
-        # Fit a cubic polynomial: line centers (pixels, scaled by 1/2000) -> lab wavelength
-        print("Fitting cubic polynomial")
-        y_lam_fit = np.polyfit(cfits / 2000, lam_ok, 3)
-
-        # Wavelength of each kept pixel, with this exposure's heliocentric correction
+        # Wavelength of each kept pixel, with the flexure offset and this exposure's heliocentric correction
+        def lam_at(y, fit, v_helio):
+            return (fit(np.asarray(y, dtype=float)) - offset) * (1 + v_helio / C_KMS)
         v_helio = self.v_helio_dict[scinum]
-        wavelengths = y_lam(y_pix, y_lam_fit, v_helio)
+        wavelengths = lam_at(y_pix, poly, v_helio)
+
+        # Arc solution residuals (lines kept by the fit)
+        res_rows = sol.rows[sol.used]
+        del_lam = sol.residuals[sol.used]
+        res_vel = del_lam / sol.lam[sol.used] * C_KMS
+        self.grapher.lam_cal_res(res_rows, del_lam, scinum)
+        self.grapher.lam_cal_res_vel(res_rows, res_vel, scinum)
 
         if (verbose == True):
-            print("v_helio:",v_helio,"km/s") # -4 km/s for G093440
-            self.grapher.plot_sci_lamcal(y_lam, y_pix, flux_raw_cor1, y_lam_fit, v_helio, scinum)
-
-        # Arc solution residuals: lab wavelength minus the fit at the fitted center.
-        # Evaluated without the heliocentric correction, since the arc lines are at rest.
-        del_lam = lam_ok - y_lam(cfits, y_lam_fit, 0.0)
-        res_vel = (del_lam / lam_ok) * 3*10**5 # Residuals in velocity space
-
-        if (verbose == True):
-            print("RMS A:",np.sqrt(np.mean(del_lam**2)))
-            with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                f.write("RMS A:"+str(np.sqrt(np.mean(del_lam**2)))+"\n")
-        print("Calculating RMS km/s")
-        rms_kms = np.sqrt(np.mean(res_vel**2))
-        print("RMS km/s:",rms_kms)
-        with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-            f.write("RMS km/s:"+str(rms_kms)+"\n")
-        # Should be ~10 km/s 0.1 A or even 0.05 A
-
-        if (verbose == True):
-            for l, dl, rv in zip(lam_ok, del_lam, res_vel):
-                print("Angstrom:",l," residual A:",dl," km/s:",rv)
-            print("Plotting Residuals...")
-
+            print("v_helio:",v_helio,"km/s")
+            self.grapher.plot_sci_lamcal(lam_at, y_pix, flux_raw_cor1, poly, v_helio, scinum)
             rnErr = np.sqrt(flux_raw_cor1 + sky_raw1) # Poisson error per pixel
-
-            #make lamcalres plots
-            self.grapher.lam_cal_res(cfits, del_lam, scinum)
-            self.grapher.lam_cal_res_vel(cfits, res_vel, scinum)
-
-            print("Mean Wavelength residual (delLAM):",np.mean(del_lam))
-            print("Mean Velocity residual (delVEL):",np.mean(res_vel))
-            with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                f.write("Mean Wavelength residual (delLAM):"+str(np.mean(del_lam))+"\n")
-                f.write("Mean Velocity residual (delVEL):"+str(np.mean(res_vel))+"\n")
-
-            self.grapher.plot_sci_lamcal_res(y_lam, y_pix, flux_raw_cor1, rnErr, y_lam_fit, v_helio, scinum)
+            self.grapher.plot_sci_lamcal_res(lam_at, y_pix, flux_raw_cor1, rnErr, poly, v_helio, scinum)
 
             # Dispersion over the full detector (wavelength decreases with row number)
-            lam_out_max = y_lam(0, y_lam_fit, v_helio) # Wavelength at the first row
-            lam_out_min = y_lam(n_rows - 1, y_lam_fit, v_helio) # Wavelength at the last row
-
+            lam_out_max = lam_at(0, poly, v_helio) # Wavelength at the first row
+            lam_out_min = lam_at(n_rows - 1, poly, v_helio) # Wavelength at the last row
             dispersion = (lam_out_max-lam_out_min)/n_rows
             print("lam_out_max:",lam_out_max)
             print("lam_out_min:",lam_out_min)
             print("Dispersion: ",dispersion, " Angstroms/pix")
-
             with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
                 f.write("lam_out_max:"+str(lam_out_max)+"\n")
                 f.write("lam_out_min:"+str(lam_out_min)+"\n")
                 f.write("Dispersion:"+str(dispersion)+"Angstroms/pix\n")
             
+        if (verbose == True):
             # Store flux_raw_cor1
             with open(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"flux_raw_cor1_"+str(scinum)+".txt", "w") as file:
                 for val in flux_raw_cor1:
@@ -346,27 +309,32 @@ class sci_modules:
         self.sky_raw_dict[scinum] = sky_raw1
         self.wavelengths_dict[scinum] = wavelengths
     
-    def fit_arc_line(self, col, pix, verbose):
+    def wavelength_solution(self, scinum, cen_line, verbose):
         """
-        Fit a Gaussian to one arc line in column `col` of the argon frame,
-        near detector row `pix`. Tries a narrow window first, then a wider one.
-        Returns [a, mu, sigma, bck], or None if both attempts fail.
+        Wavelength solution for one science frame: the arc is extracted along that
+        frame's trace and its lines identified automatically (see wavecal.py).
+        Cached per frame. Also writes OUT/<objid>_wavecal_<n>.txt with the matched lines.
         """
-        a_col = self.argon[:, col]
-        for width, maxfev in ((8, 1000), (11, 10000)):
-            loc_vals = np.arange(pix - width, pix + width)
-            flux_vals = a_col[pix - width : pix + width]
-            bck0 = np.median(flux_vals) # Arc is not bias subtracted, so the floor is ~bias level
-            p0 = [max(np.max(flux_vals) - bck0, 1.0), pix, 2.0, bck0]
-            # Keep the center inside the window so the fit can't wander off to another row
-            bounds = [(0, pix - width, 1, -100), (np.inf, pix + width, width, np.inf)] # a, mu, sig, bck
-            try:
-                popt, _ = curve_fit(G, loc_vals, flux_vals, p0=p0, bounds=bounds, maxfev=maxfev)
-                return popt
-            except RuntimeError:
-                if (verbose == True):
-                    print(f"Arc fit failed near pixel {pix} with half-width {width}, maxfev={maxfev}")
-        return None
+        if scinum in self.wave_solutions:
+            return self.wave_solutions[scinum]
+        print("Wavelength calibration...")
+        arc_spec = wavecal.extract_arc(self.argon, cen_line, self.appw)
+        sol = wavecal.solve(arc_spec, self.arc_lamps, self.wave_reference, self.binning_y, self.wcfg)
+        print(sol.summary())
+        with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
+            f.write(sol.summary() + "\n")
+            for note in sol.notes:
+                f.write("  " + note + "\n")
+        with open(f"{self.target_dir}OUT/{self.objid}_wavecal_{scinum}.txt", "w") as f:
+            f.write(f"# {sol.summary()}\n")
+            f.write(f"# arc {self.group.arc}, lamps {', '.join(self.arc_lamps)}, reference {sol.reference}\n")
+            for note in sol.notes:
+                f.write(f"# {note}\n")
+            f.write(sol.table())
+        if verbose:
+            print("\n".join(sol.notes))
+        self.wave_solutions[scinum] = sol
+        return sol
 
 #-----------------------------------------
 

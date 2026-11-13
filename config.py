@@ -83,6 +83,20 @@ DEFAULTS = {
     "lines": {
         "metal_mask": [2.0] * 16, # Half-widths (A) of the 16 metal-line windows for fit_lines
     },
+    "wavecal": {
+        "order": "auto", # Polynomial order, or "auto": the order (2-6) that best predicts each
+                         # line from the others (leave-one-out)
+        "lamps": [], # Line lists to use, e.g. ["ARGON"] (default: lamps that are on in the arc header)
+        "reference": None, # Reference solution file (default: calib_data/wavecal/kosmos_<disperser>.json)
+        "search": 200, # Largest shift (rows) allowed between the reference and this arc
+        "match_tol": 3.0, # Match observed and catalog lines within this many rows
+        "clip_sigma": 3.0, # Sigma clipping of the fit
+        "min_lines": 8, # Fewest matched lines for a solution
+        "max_rms": 15.0, # km/s; a worse solution stops with an error (likely misidentified lines)
+        "peak_sigma": 5.0, # Arc line detection threshold (times the noise)
+        "flexure": "report", # Night-sky line check: "off", "report", or "correct" (shift wavelengths)
+        "sky_lines": [5577.338, 6300.304, 6363.776], # Night-sky lines for the flexure check (air, A)
+    },
     "output": {
         "verbose": False, # Extra diagnostics, plots and intermediate files
         "sound": False, # Play a short tone when KARP finishes
@@ -96,8 +110,8 @@ class ConfigError(ValueError):
 
 def _check_type(section, key, value, default):
     """Values must match the type of their default (ints are accepted for floats)."""
-    if default is None or default is REQUIRED:
-        return value
+    if default is None or default is REQUIRED or (section, key) == ("wavecal", "order"):
+        return value # checked in merge()
     if isinstance(default, bool):
         ok = isinstance(value, bool)
     elif isinstance(default, float):
@@ -128,6 +142,12 @@ def merge(user):
         for key, value in values.items():
             if value is REQUIRED:
                 raise ConfigError(f"[{section}] {key} is required")
+
+    wc = cfg["wavecal"]
+    if wc["order"] != "auto" and not (isinstance(wc["order"], int) and wc["order"] >= 1):
+        raise ConfigError('[wavecal] order should be "auto" or a positive integer')
+    if wc["flexure"] not in ("off", "report", "correct"):
+        raise ConfigError('[wavecal] flexure should be "off", "report" or "correct"')
 
     det = cfg["detector"]
     if not (len(det["amp_data"]) == len(det["amp_overscan"]) == len(det["gain"])):

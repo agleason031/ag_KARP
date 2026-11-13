@@ -76,6 +76,22 @@ jackknife = false                     # also report S/N with each frame left out
 # Half-widths (A) of the 16 metal-line windows used by fit_lines
 metal_mask = [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
 
+[wavecal]
+# Arc lines are found and identified automatically, starting from a rough solution
+# for the grating in calib_data/wavecal/kosmos_<disperser>.json. Each run writes
+# OUT/<object>_wavecal_<n>.txt with every matched line and its residual.
+order = "auto"     # polynomial order, or "auto" (best leave-one-out accuracy, orders 2-6)
+lamps = []         # line lists, e.g. ["ARGON", "NEON"]; empty = lamps on in the arc header
+# reference = "calib_data/wavecal/kosmos_blue.json"   # default: by disperser
+search = 200       # largest shift (rows) between the reference and the arc
+match_tol = 3.0    # rows
+clip_sigma = 3.0
+min_lines = 8
+max_rms = 15.0     # km/s; a worse solution stops with an error
+peak_sigma = 5.0   # arc line detection threshold, times the noise
+flexure = "report" # night-sky line check: "off", "report", or "correct"
+sky_lines = [5577.338, 6300.304, 6363.776]
+
 [output]
 verbose = false
 sound = false   # play a short tone when KARP finishes
