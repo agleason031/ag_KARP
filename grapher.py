@@ -347,7 +347,7 @@ class grapher:
         axNorm.set_ylabel("Normalized Flux")
         plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Normalized_hbeta"+str(scinum)+".png", dpi=300)   
     
-    def plot_combined_norm(self, gwave, med_comb, sig_final, RMS):
+    def plot_combined_norm(self, gwave, med_comb, sig_final, snr):
         plt.cla()
         fig, axNorm = plt.subplots(1, 1, figsize=(8,6))
         axNorm.scatter(gwave,med_comb, s=0.8,color="black")
@@ -357,7 +357,7 @@ class grapher:
         axNorm.set_ylim(-0.1,1.5)
         
         axNorm.scatter(gwave,sig_final, s=0.3,color="red")
-        axNorm.set_title("Median Normalized Spectra for "+self.objid+", SNR 5500 A:"+str(np.round(1/RMS, decimals=2)))
+        axNorm.set_title("Median Normalized Spectra for "+self.objid+", S/N 5500 A: "+str(np.round(snr, decimals=1)))
         
         plt.savefig(self.target_dir+"OUT/"+self.objid+"_OUT.png", dpi=300)
         

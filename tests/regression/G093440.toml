@@ -12,7 +12,6 @@ reduce = true
 normalize = true
 combine = true
 fit_lines = false
-optimize = false
 
 [detector]
 amp_data = [[0, 512], [512, 1024]]

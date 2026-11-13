@@ -45,7 +45,6 @@ DEFAULTS = {
         "normalize": True, # Continuum-normalize each frame
         "combine": True, # Median-combine the normalized frames
         "fit_lines": False, # Velocity and metal-line fits on the combined spectrum
-        "optimize": False, # Search aperture / normalization settings for maximum S/N
     },
     "detector": {
         # KOSMOS at 2x1 binning: two amplifiers split at column 512. Column ranges are

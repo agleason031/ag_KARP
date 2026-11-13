@@ -18,7 +18,6 @@ Usage:
 from datetime import timedelta
 from astropy import log
 log.setLevel('ERROR')
-from scipy.optimize import differential_evolution
 from grapher import grapher
 import numpy as np
 import argparse
@@ -65,9 +64,8 @@ def run_group(cfg, group):
     """Reduce one object/setup group. Returns its sci_modules instance."""
     steps = cfg["steps"]
     verbose = cfg["output"]["verbose"]
-    optimize = steps["optimize"]
-    if not steps["reduce"] and (steps["normalize"] or optimize):
-        raise ConfigError("[steps] normalize and optimize need reduce = true in the same run "
+    if not steps["reduce"] and steps["normalize"]:
+        raise ConfigError("[steps] normalize needs reduce = true in the same run "
                           "(reduced spectra are not reloaded from disk yet)")
 
     target_dir = os.path.join(cfg["paths"]["output_dir"], group.out_name) + "/"
@@ -78,45 +76,20 @@ def run_group(cfg, group):
     sci_mods = sci_modules.sci_modules(cfg, group, target_dir, graph)
     scinums = sorted(group.science)
 
-    def process_images(x=None):
-        #optimize overrides the aperture and normalization settings
-        if x is not None:
-            sci_mods.appw = int(round(x[0]))
-            graph.appw = int(round(x[0]))
-            sci_mods.norm_line_width = int(round(x[1] * 5))
-            sci_mods.norm_line_boxcar = int(round(x[2] * 5))
+    if steps["reduce"]:
+        masterbias, final_flat = sci_tools.get_cal_images(group.bias, group.flat, sci_mods.geom, verbose, graph)
+        #individual image processing
+        for scinum in scinums:
+            sci_mods.reduce_image(scinum, masterbias, final_flat, verbose)
 
-        SNR = None # Only set when spectra are combined
-        if steps["reduce"] or optimize:
-            masterbias, final_flat = sci_tools.get_cal_images(group.bias, group.flat, sci_mods.geom, verbose, graph)
-            #individual image processing
-            for scinum in scinums:
-                sci_mods.reduce_image(scinum, masterbias, final_flat, verbose)
+    if steps["normalize"]:
+        for scinum in scinums:
+            sci_mods.normalization(scinum, verbose)
 
-        if steps["normalize"] or optimize:
-            for scinum in scinums:
-                sci_mods.normalization(scinum, verbose, optimize)
-
-        # Median-combine the normalized spectra OUT/<objid>_<n>_OUT.fits of this group's frames
-        if steps["combine"] or optimize:
-            SNR = sci_mods.combine_spectra(scinums, verbose, jackknife=cfg["combine"]["jackknife"])
-
-        if optimize:
-            print(f"SNR {SNR}, APPW: {(sci_mods.appw*2)+1}, NormW: {sci_mods.norm_line_width}, NormBox: {sci_mods.norm_line_boxcar}")
-        return SNR
-
-    if optimize:
-        bounds = [
-            (10, 20),    # a_width
-            (130 / 5, 250 / 5),    # norm_line_width
-            (50 / 5, 100 / 5),    # norm_line_boxcar
-            ] # division by 5 is to reduce parameter space and speed up optimization
-        res = differential_evolution(lambda x: -process_images(x), bounds=bounds, maxiter=15, strategy='best1bin', popsize=4, tol=8, atol=10, workers=1, mutation=(0.2, 0.5))
-        print(f"Optimal aperture width: {int(round(res.x[0])) * 2 + 1}, SNR: {-res.fun}")
-        print(f"Optimal norm width: {res.x[1] * 5} and optimal boxcar: {res.x[2] * 5}")
-        sci_mods.snr = -res.fun
-    else:
-        sci_mods.snr = process_images()
+    # Median-combine the normalized spectra OUT/<objid>_<n>_OUT.fits of this group's frames
+    sci_mods.snr = None
+    if steps["combine"]:
+        sci_mods.snr = sci_mods.combine_spectra(scinums, verbose, jackknife=cfg["combine"]["jackknife"])
 
     if steps["fit_lines"]:
         radial_vel = sci_tools.fit_vel_lines(sci_mods.gwave, sci_mods.med_comb, graph)

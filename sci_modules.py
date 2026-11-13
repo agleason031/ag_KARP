@@ -27,6 +27,18 @@ import numpy as np
 #-------------------------------------
 #helper functions
 
+# Error of the median of n values relative to the error of their mean, for Gaussian
+# noise and similar errors in each frame (Monte Carlo, 400k trials; large-n limit sqrt(pi/2))
+_MEDIAN_ERROR_FACTOR = np.array([1.0, 1.0, 1.0, 1.159, 1.094, 1.196, 1.135, 1.213, 1.161,
+                                 1.222, 1.174, 1.232, 1.185, 1.234, 1.194, 1.235])
+
+def median_error_factor(n):
+    """Factor for each n (array); n = 0 gives 1 (those pixels have no data anyway)."""
+    n = np.asarray(n)
+    return np.where(n < len(_MEDIAN_ERROR_FACTOR),
+                    _MEDIAN_ERROR_FACTOR[np.minimum(n, len(_MEDIAN_ERROR_FACTOR) - 1)],
+                    np.sqrt(np.pi / 2))
+
 #-------------------------
 
 class sci_modules:
@@ -316,7 +328,7 @@ class sci_modules:
 
 #-----------------------------------------
 
-    def normalization(self, scinum, verbose, optimize):
+    def normalization(self, scinum, verbose):
         # Mask out deep absorption features
         # Deep features in order of ascending wavelength, in angstroms
         # We have spectra down to Lam = 3780 and up to 6600 angstroms
@@ -428,9 +440,8 @@ class sci_modules:
         # Now smooth this fit with a moving boxcar
         smooth_cont = uniform_filter(np.array(fitted_values), size=self.norm_line_boxcar)
         
-        if optimize == False:
-            # Plot fitted flux values from the line fit to see what is going on
-            self.grapher.plot_fit_over_flux(fitted_wavelengths, smooth_cont, fitted_values, fitted_fluxes, lam_removea, flux_mask_removea, lam_red, lam_remove, flux_mask_red, flux_mask_remove, lam_reda, flux_mask_reda, scinum)
+        # Plot fitted flux values from the line fit to see what is going on
+        self.grapher.plot_fit_over_flux(fitted_wavelengths, smooth_cont, fitted_values, fitted_fluxes, lam_removea, flux_mask_removea, lam_red, lam_remove, flux_mask_red, flux_mask_remove, lam_reda, flux_mask_reda, scinum)
                 
         Fnorm = np.array(fitted_fluxes) / smooth_cont # Divide raw flux by our continuum that we just fit
 
@@ -444,6 +455,16 @@ class sci_modules:
                 print("Masked values:", Fnorm[flagged])
 
         sf_sm = np.array(fitted_err) / smooth_cont # Extraction error, normalized
+        
+        # S/N per pixel of this frame, from the propagated errors
+        fw = np.asarray(fitted_wavelengths)
+        good = mask == 0
+        win = good & (fw >= 5450) & (fw <= 5550)
+        msg = (f"Image {scinum} normalized: S/N per pixel {np.median(Fnorm[good] / sf_sm[good]):.1f} (median), "
+               f"{np.median(Fnorm[win] / sf_sm[win]) if win.any() else np.nan:.1f} at 5450-5550 A")
+        print(msg)
+        with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
+            f.write(msg + "\n")
         
         if (verbose == True):
             print("Plotting Normalized Spectra")
@@ -459,12 +480,17 @@ class sci_modules:
     def combine_spectra(self, scinums, verbose, jackknife=False):
         """
         Median-combine the normalized spectra of the given science images
-        (OUT/{objid}_{n}_OUT.fits) on the wavelength grid of the first one,
-        write the result to OUT/{objid}_combined.fits, and return the S/N at 5500 A.
+        (OUT/{objid}_{n}_OUT.fits) on the wavelength grid of the first one, with errors
+        propagated from the per-frame errors, and write OUT/{objid}_combined.fits.
+        Returns the S/N at 5500 A: the median of Flux/Sigma over 5450-5550 A.
         With jackknife=True, also report the S/N with each image left out in turn.
         """
         print("KARP is combining spectra")
         log_path = self.target_dir+"OUT/KARP_OUT_log.txt"
+        def log(msg):
+            print(msg)
+            with open(log_path, "a") as fo:
+                fo.write(msg + "\n")
         with open(log_path, "w") as fo:
             fo.write("KARP is combining spectra\n")
 
@@ -472,18 +498,16 @@ class sci_modules:
         file_names = [f"{self.target_dir}OUT/{self.objid}_{n}_OUT.fits" for n in scinums]
         missing = [f for f in file_names if not os.path.exists(f)]
         if missing:
-            raise FileNotFoundError(f"Normalized spectra not found (run with spec_norm = true first): {missing}")
+            raise FileNotFoundError(f"Normalized spectra not found (run with normalize = true first): {missing}")
         if (verbose == True):
-            print("Using these file names:",file_names)
-            with open(log_path, "a") as fo:
-                fo.write("Using these file names:"+str(file_names)+"\n")
+            log("Using these file names: " + str(file_names))
 
         # Use wavelength grid from first file
         gwave = np.asarray(Table.read(file_names[0])["Lam"])
 
         def combine(files):
             """
-            Median-combine `files` on gwave. Returns (med_comb, comb_mask, gsig, rms).
+            Median-combine `files` on gwave. Returns (med_comb, sig_comb, comb_mask).
             comb_mask bits: 1 = above a comb_clip threshold, 2 = no unmasked data.
             """
             # Interpolate onto reference grid; masked pixels are left out of the median
@@ -498,11 +522,21 @@ class sci_modules:
                 s = interp1d(t["Lam"], t["Sigma"], bounds_error=False, fill_value=np.nan)
                 gflux_interp.append(f(gwave))
                 gsig.append(s(gwave))
+            gflux = np.array(gflux_interp)
+            gsig = np.where(np.isfinite(gflux), np.array(gsig), np.nan) # errors only where flux is used
 
             # Stack and take median, ignoring NaNs
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning) # All-NaN columns are flagged below
-                med_comb = np.nanmedian(np.array(gflux_interp), axis=0)
+                med_comb = np.nanmedian(gflux, axis=0)
+
+            # Error of the combined spectrum: the error of the inverse-variance mean of the
+            # frames used, times how much noisier a median of that many values is than a mean
+            n_used = np.sum(np.isfinite(gflux) & (gsig > 0), axis=0)
+            inv_var = np.where(gsig > 0, 1.0 / gsig**2, 0.0)
+            with np.errstate(divide="ignore"):
+                sig_mean = np.sqrt(1.0 / np.sum(inv_var, axis=0)) # inf where no frame has data
+            sig_comb = sig_mean * median_error_factor(n_used)
 
             # Flag (don't overwrite) values above the optional thresholds,
             # e.g. the zeroth order or remaining bad pixels
@@ -512,72 +546,56 @@ class sci_modules:
                     comb_mask[med_comb > self.comb_clip] |= 1
                 for lam_min, lam_max, threshold in self.comb_clip_regions:
                     comb_mask[(gwave >= lam_min) & (gwave <= lam_max) & (med_comb > threshold)] |= 1
-            comb_mask[np.isnan(med_comb)] |= 2
+            comb_mask[np.isnan(med_comb) | ~np.isfinite(sig_comb)] |= 2
+            return med_comb, sig_comb, comb_mask
 
-            print("Computing RMS")
-            # Compute RMS in 5450–5550 from unmasked pixels
-            mask = (gwave >= 5450) & (gwave <= 5550) & (comb_mask == 0)
-            rms = np.sqrt(np.mean((1 - med_comb[mask])**2))
-            return med_comb, comb_mask, np.array(gsig), rms
+        def snr_in(med_comb, sig_comb, comb_mask, lam_min, lam_max):
+            """Median Flux/Sigma of unmasked pixels in a wavelength range (NaN if none)."""
+            m = (gwave >= lam_min) & (gwave <= lam_max) & (comb_mask == 0)
+            return float(np.median(med_comb[m] / sig_comb[m])) if m.any() else np.nan
 
         if jackknife == True:
             # Leave out each file in turn and report the S/N, for comparison only
             for i in range(len(file_names)):
                 selected_files = [f for j, f in enumerate(file_names) if j != i]
-                _, _, _, rms_i = combine(selected_files)
-                print("SNR at 5500:",1/rms_i,f"with files {selected_files}")
-                with open(log_path, "a") as fo:
-                    fo.write("SNR at 5500:"+str(1/rms_i)+"\n")
-                    fo.write(f"with files {selected_files}\n")
+                med_i, sig_i, mask_i = combine(selected_files)
+                log(f"S/N at 5500 A: {snr_in(med_i, sig_i, mask_i, 5450, 5550):.1f} with files {selected_files}")
 
         # The combined spectrum always uses all files
-        med_comb, comb_mask, gsig, rms = combine(file_names)
+        med_comb, sig_final, comb_mask = combine(file_names)
 
-        # Calculate and print SNR at 5500A
-        print("SNR at 5500:",1/rms)
-        with open(log_path, "a") as fo:
-            fo.write("SNR at 5500:"+str(1/rms)+"\n")
-
-        # Calculate sig_final(lam), should be 1.2,1.3
-        print("Calculating sig_final(lam)")
-
-        # Avoid division by zero or NaNs
-        inv_var_array = np.where(gsig > 0, 1.0 / gsig**2, 0)
-
-        # Sum over spectra (axis=0 is spectra, axis=1 is wavelength, so we sum over 0)
-        sum_sigw = np.sum(inv_var_array, axis=0)  # shape: (N_wavelength,)
-
-        with np.errstate(divide="ignore"): # Wavelengths with no valid sigma give inf
-            sig_w = np.sqrt(1/sum_sigw)
-
-        # Get the closest sig_w to 5500 angstroms
-        sig_w55_idx = np.argmin(np.abs(gwave - 5550))
-        sig_w55 = sig_w[sig_w55_idx]
-
-        # Compute sig_final
-        sig_final = rms * sig_w/sig_w55
-
-        if (verbose == True):
-            print("(RMS/sig_w55)",(rms/sig_w55))
-            with open(log_path, "a") as fo:
-                fo.write("(RMS/sig_w55)"+str(rms/sig_w55)+"\n")
+        # S/N per pixel from the propagated errors, around several wavelengths
+        snr5500 = snr_in(med_comb, sig_final, comb_mask, 5450, 5550)
+        bands = {lam: snr_in(med_comb, sig_final, comb_mask, lam - 50, lam + 50)
+                 for lam in range(4000, 10000, 500)}
+        bands = {lam: v for lam, v in bands.items() if np.isfinite(v)}
+        log(f"S/N per pixel at 5500 A (median Flux/Sigma, 5450-5550 A): {snr5500:.1f}")
+        log("S/N per pixel by wavelength: " + ", ".join(f"{lam} A: {v:.0f}" for lam, v in bands.items()))
+        # Scatter-based check (the old measure): 1/RMS about 1 in 5450-5550 A. It also responds
+        # to continuum placement and real spectral features, so it is a diagnostic only.
+        m = (gwave >= 5450) & (gwave <= 5550) & (comb_mask == 0)
+        snr_rms = 1 / np.sqrt(np.mean((1 - med_comb[m])**2)) if m.any() else np.nan
+        log(f"Scatter-based S/N in 5450-5550 A (diagnostic): {snr_rms:.1f}")
 
         # Write the combined spectrum
         out_path = f"{self.target_dir}OUT/{self.objid}_combined.fits"
         t = Table([gwave, med_comb, sig_final, comb_mask], names=("Lam", "Flux", "Sigma", "Mask"))
         t.meta["SCINUMS"] = ",".join(str(n) for n in scinums)
-        t.meta["SNR5500"] = 1/rms
+        t.meta["SNR5500"] = (snr5500, "median Flux/Sigma, 5450-5550 A")
+        t.meta["SNRRMS"] = (snr_rms, "1/RMS about 1, 5450-5550 A (diagnostic)")
         t.write(out_path, format="fits", overwrite=True)
         print("Combined spectrum written to", out_path)
 
-        self.grapher.plot_combined_norm(gwave, med_comb, sig_final, rms)
+        self.grapher.plot_combined_norm(gwave, med_comb, sig_final, snr5500)
 
         self.gwave = gwave
         self.med_comb = med_comb
         self.sig_final = sig_final
         self.comb_mask = comb_mask
+        self.snr_bands = bands
+        self.snr_rms = snr_rms
 
-        return 1/rms
+        return snr5500
     
 #-----------------------------------------
     

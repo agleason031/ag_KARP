@@ -38,7 +38,6 @@ reduce = true      # calibrate, trace, extract, wavelength-calibrate each frame
 normalize = true   # continuum-normalize each frame (needs reduce in the same run)
 combine = true     # median-combine the normalized frames (can run alone)
 fit_lines = false  # velocity and metal-line fits on the combined spectrum
-optimize = false   # search aperture/normalization settings for the best S/N (slow)
 
 [detector]
 # KOSMOS at 2x1 binning. Column ranges are 0-based and end-exclusive, one per amplifier.

@@ -119,6 +119,7 @@ def snapshot(sm, out_dir):
     if hasattr(sm, "comb_mask"):
         snap["comb_mask"] = np.asarray(sm.comb_mask)
     snap["snr"] = np.array([sm.snr if sm.snr is not None else np.nan])
+    snap["snr_rms"] = np.array([getattr(sm, "snr_rms", np.nan)])
     return snap
 
 
