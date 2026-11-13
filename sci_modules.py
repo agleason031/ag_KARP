@@ -101,12 +101,13 @@ class sci_modules:
             # Convert from ADU to electrons
             sci_final_1 = sci_final*0.6
             self.sci_final_dict[scinum] = sci_final_1
-        
-        if (verbose == True): #plot and write to disk
-            self.grapher.plot_sci_final(sci_final, scinum)
-            sci_final_write = CCDData(sci_final, unit="adu")
-            sci_final_write.write(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"sci_final_"+str(scinum)+".fits", overwrite = True)
-        
+
+            # Plot and write to disk only when first created; a cached image was already written
+            if (verbose == True):
+                self.grapher.plot_sci_final(sci_final, scinum)
+                sci_final_write = CCDData(sci_final, unit="adu")
+                sci_final_write.write(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"sci_final_"+str(scinum)+".fits", overwrite = True)
+
     #----------------------------
     #trace fitting
         

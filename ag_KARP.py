@@ -22,7 +22,6 @@ import argparse
 import warnings
 import time
 import os
-import pygame
 import functions
 import sci_tools
 import sci_modules
@@ -30,27 +29,25 @@ import sci_modules
 #-------------------------------
 #constant definitions
 
-#sound related
-pygame.mixer.init(frequency=44100, size=-16, channels=1)
-# Generate sine wave
-duration = 0.07 # seconds
-freq = 777  # Hz
-freq1 = 600
-sample_rate = 44100
-t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
-waveform = np.sin(2 * np.pi * freq * t)
-waveform1 = np.sin(2 * np.pi * freq1 * t)
-# Convert to 16-bit signed integers
-audio = np.int16(waveform * 32767).tobytes()
-audio1 = np.int16(waveform1 * 32767).tobytes()
-# Create sound objects
-sound = pygame.mixer.Sound(buffer=audio)
-sound1 = pygame.mixer.Sound(buffer=audio1)
 # Suppress warnings
 warnings.filterwarnings("ignore")
 
 #----------------------------------
 #function definitions
+
+def play_finish_sound():
+    """Play two short tones (777 Hz then 600 Hz) to signal KARP has finished."""
+    import pygame # Imported here so pygame only touches the audio device when sound is on
+
+    duration = 0.07 # seconds
+    sample_rate = 44100
+    pygame.mixer.init(frequency=sample_rate, size=-16, channels=1)
+    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+    for freq in (777, 600): # Hz
+        # Generate sine wave, convert to 16-bit signed integers, and play it
+        audio = np.int16(np.sin(2 * np.pi * freq * t) * 32767).tobytes()
+        pygame.mixer.Sound(buffer=audio).play()
+        pygame.time.delay(int(duration * 1000)) # wait for playback to finish
 
 # Take parameters from the KparamGXXXXXX.txt file
 def take_bait(file):
@@ -88,7 +85,8 @@ def process_images(x):
         grapher.appw = int(round(x[0]))
         sci_mods.norm_line_width = int(round(x[1] * 5))
         sci_mods.norm_line_boxcar = int(round(x[2] * 5))
-        
+
+    SNR = None # Only set when spectra are combined
     if skip_red == False or optimize == True:
         #get image filenames
         blist = [CCDData.read(functions.format_fits_filename(dloc, b), unit='adu') for b in bim]
@@ -135,11 +133,13 @@ if __name__ == "__main__":
     
     # Take the parameter file from the command line
     parser = argparse.ArgumentParser(prog="KARP")
-    parser.add_argument('-kparam', '--kp') # Location of our data
+    parser.add_argument('-kparam', '--kp', required=True, help="KARP parameter file") # Location of our data
     args = parser.parse_args()
-    
+
     #get input parameters
-    params = take_bait(str(args.kp))
+    params = take_bait(args.kp)
+    if params is None:
+        raise SystemExit("KARP could not read the parameter file, stopping.")
     
     # assign relevant values
     dloc = str(params["dloc"]) # Location to store output data
@@ -157,7 +157,8 @@ if __name__ == "__main__":
     spec_norm = functions.string_to_bool(params["spec_norm"])
     optimize = functions.string_to_bool(params["optimize"])
     verbose = functions.string_to_bool(params["verbose"])
-    
+    sound_on = functions.string_to_bool(params.get("sound", "false")) # Finishing sound, off unless sound = true
+
     grapher = grapher(params)
     sci_mods = sci_modules.sci_modules(params, grapher)
     
@@ -225,10 +226,8 @@ if __name__ == "__main__":
         f.write("><(((º>")
     
     #play finishing sound
-    sound.play()
-    pygame.time.delay(int(duration * 1000))  # wait for playback to finish
-    sound1.play()
-    pygame.time.delay(int(duration * 1000))  # wait for playback to finish
+    if sound_on == True:
+        play_finish_sound()
     
     print("KARP took:",duration_run," to run")
     print("><(((º>")

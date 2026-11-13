@@ -35,3 +35,5 @@ comb_spec = true
 fit_lines = false
 optimize = false
 verbose = false
+# Play a short tone when KARP finishes
+sound = false
