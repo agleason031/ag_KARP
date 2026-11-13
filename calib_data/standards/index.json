@@ -1,0 +1,117 @@
+{
+ "agk81d266": {
+  "file": "agk81d266.txt",
+  "aliases": [
+   "AGK+81 266",
+   "AGK+81D266"
+  ],
+  "source": "CALSPEC agk_81d266_stisnic_007.fits"
+ },
+ "bd17d4708": {
+  "file": "bd17d4708.txt",
+  "aliases": [
+   "BD+17 4708",
+   "BD+17D4708"
+  ],
+  "source": "CALSPEC bd_17d4708_stisnic_007.fits"
+ },
+ "bd28d4211": {
+  "file": "bd28d4211.txt",
+  "aliases": [
+   "BD+28 4211",
+   "BD+28D4211",
+   "BD28"
+  ],
+  "source": "CALSPEC bd_28d4211_stis_005.fits"
+ },
+ "feige110": {
+  "file": "feige110.txt",
+  "aliases": [
+   "Feige 110",
+   "F110"
+  ],
+  "source": "CALSPEC feige110_stisnic_008.fits"
+ },
+ "feige34": {
+  "file": "feige34.txt",
+  "aliases": [
+   "Feige 34",
+   "F34"
+  ],
+  "source": "CALSPEC feige34_stis_006.fits"
+ },
+ "g191b2b": {
+  "file": "g191b2b.txt",
+  "aliases": [
+   "G191-B2B",
+   "G191B2B",
+   "BD+52 913"
+  ],
+  "source": "CALSPEC g191b2b_stiswfcnic_004.fits"
+ },
+ "gd153": {
+  "file": "gd153.txt",
+  "aliases": [
+   "GD 153"
+  ],
+  "source": "CALSPEC gd153_stiswfcnic_004.fits"
+ },
+ "gd71": {
+  "file": "gd71.txt",
+  "aliases": [
+   "GD 71"
+  ],
+  "source": "CALSPEC gd71_stiswfcnic_004.fits"
+ },
+ "grw70d5824": {
+  "file": "grw70d5824.txt",
+  "aliases": [
+   "GRW+70 5824",
+   "GRW+70D5824"
+  ],
+  "source": "CALSPEC grw_70d5824_stiswfcnic_003.fits"
+ },
+ "hd93521": {
+  "file": "hd93521.txt",
+  "aliases": [
+   "HD 93521"
+  ],
+  "source": "CALSPEC hd93521_stis_007.fits"
+ },
+ "hz2": {
+  "file": "hz2.txt",
+  "aliases": [
+   "HZ 2"
+  ],
+  "source": "CALSPEC hz2_stis_001.fits"
+ },
+ "hz4": {
+  "file": "hz4.txt",
+  "aliases": [
+   "HZ 4"
+  ],
+  "source": "CALSPEC hz4_stis_009.fits"
+ },
+ "hz43": {
+  "file": "hz43.txt",
+  "aliases": [
+   "HZ 43",
+   "HZ43A"
+  ],
+  "source": "CALSPEC hz43_stis_005.fits"
+ },
+ "hz44": {
+  "file": "hz44.txt",
+  "aliases": [
+   "HZ 44"
+  ],
+  "source": "CALSPEC hz44_stis_006.fits"
+ },
+ "lds749b": {
+  "file": "lds749b.txt",
+  "aliases": [
+   "LDS 749B"
+  ],
+  "source": "CALSPEC lds749b_stisnic_008.fits"
+ }
+}

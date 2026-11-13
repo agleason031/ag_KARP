@@ -22,7 +22,7 @@ DEFAULTS = {
     "paths": {
         "raw_dir": REQUIRED, # Directory with the raw KOSMOS frames
         "output_dir": REQUIRED, # Each object is reduced into output_dir/<object>/
-        "pattern": "*.fits", # Which files in raw_dir to consider
+        "pattern": "*.fits", # Which files in raw_dir to consider; "**/*.fits" includes subdirectories
     },
     "frames": {
         # Frame discovery is automatic (from FITS headers). These narrow or override it.
@@ -30,8 +30,10 @@ DEFAULTS = {
         "objects": [], # Only reduce these OBJNAMEs (empty = all objects found)
         "science": [], # Only use these science frames (empty = all)
         "bias": [], # Use exactly these bias frames (empty = all biases with matching binning)
-        "flat": [], # Use exactly these flats (empty = all flats with matching setup)
-        "arc": None, # Use this arc frame (default = matching argon arc nearest in time)
+        "flat": [], # Use exactly these flats (empty = all flats with matching setup; none found =
+                    # no flat-field correction)
+        "arc": [], # Use exactly these arcs (empty = for each lamp combination, the matching arcs
+                   # nearest in time); they are median-combined per lamp combination, then added
         "exclude": [], # Never use these frames
     },
     "target": {
@@ -44,6 +46,7 @@ DEFAULTS = {
         "reduce": True, # Calibrate, trace, extract and wavelength-calibrate each frame
         "combine": True, # Scale and combine the extracted frames
         "normalize": True, # Continuum-normalize the combined spectrum (optional)
+        "fluxcal": True, # Flux-calibrate with a standard star of the same setup (skipped if none)
     },
     "detector": {
         # KOSMOS at 2x1 binning: two amplifiers split at column 512. Column ranges are
@@ -91,6 +94,23 @@ DEFAULTS = {
         "extra_mask": [], # More regions to leave out: [[lam_min, lam_max], ...]
         "clip": None, # Flag (Mask bit 1) normalized flux above this (default: no flag)
         "clip_regions": [], # [[lam_min, lam_max, threshold], ...]: flag normalized flux above threshold there
+    },
+    "fluxcal": {
+        # Optional: a spectrophotometric standard observed with the same setup (disperser,
+        # slit, binning) gives the sensitivity function for every object with that setup.
+        "standard": "auto", # "auto": objects whose OBJNAME matches calib_data/standards/index.json;
+                            # or the OBJNAME of the one object to use as the standard
+        "reference": None, # Tabulated flux of the standard (air wavelength A, erg/s/cm2/A) if it
+                           # isn't in the library (use with standard = its OBJNAME)
+        "extinction": "apo", # Extinction curve: "apo" or a file of wavelength (A), mag/airmass
+        "knot_spacing": 250.0, # A between spline knots of the sensitivity fit
+        "clip_sigma": 3.0, # Sigma clipping of the sensitivity fit
+        "mask": "default", # Regions left out of the fit: "default" (calib_data/masks/standard.txt),
+                           # "none", or a file with columns center, half-width (A)
+        "extra_mask": [], # More regions to leave out: [[lam_min, lam_max], ...]
+        "resolution": 0.0, # FWHM (A) the tabulated flux is smoothed to; 0 = 3 pixels
+        "max_extrapolate": 100.0, # A the sensitivity is extended (linearly, Mask bit 8) past the
+                                  # fitted range, e.g. when a masked line sits at the detector edge
     },
     "combine": {
         "scale": "smooth", # Scale frames to the best one: "smooth" (polynomial in wavelength),
@@ -148,6 +168,8 @@ def _check_type(section, key, value, default):
 def merge(user):
     """Apply defaults to a user config dict and validate it."""
     cfg = copy.deepcopy(DEFAULTS)
+    if isinstance(user.get("frames", {}).get("arc"), int): # a single arc frame number
+        user = {**user, "frames": {**user["frames"], "arc": [user["frames"]["arc"]]}}
     for section, values in user.items():
         if section not in DEFAULTS:
             raise ConfigError(f"Unknown section [{section}]")
@@ -176,6 +198,11 @@ def merge(user):
         raise ConfigError('[wavecal] order should be "auto" or a positive integer')
     if wc["flexure"] not in ("off", "report", "correct"):
         raise ConfigError('[wavecal] flexure should be "off", "report" or "correct"')
+
+    if cfg["fluxcal"]["standard"] != "auto" and not isinstance(cfg["fluxcal"]["standard"], str):
+        raise ConfigError('[fluxcal] standard should be "auto" or an object name')
+    if cfg["fluxcal"]["reference"] is not None and cfg["fluxcal"]["standard"] == "auto":
+        raise ConfigError("[fluxcal] reference needs standard = the OBJNAME of the standard star")
 
     zo = cfg["flat"]["zeroth_order"]
     if not (zo in ("auto", "none") or (isinstance(zo, list) and all(

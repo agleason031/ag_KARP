@@ -226,3 +226,42 @@ class grapher:
                 ax.set_xlim(start, start + 500)
                 fig.savefig(self.target_dir + f"OUT/normalized_zoom/{self.objid}_normalized_{int(start)}.png", dpi=200)
         plt.close(fig)
+
+    def plot_sensitivity(self, sens):
+        """Measured sensitivity (mag), the pixels used, the masked regions, and the fit."""
+        lam, s, fit, used = sens["lam"], sens["sens"], sens["fit"], sens["used"]
+        fig, (ax, axr) = plt.subplots(2, 1, figsize=(10, 7), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+        ax.plot(lam, s, color="0.6", lw=0.7, label="measured")
+        ax.plot(lam[used], s[used], ".", ms=2, color="black", label="used in fit")
+        ax.plot(lam, fit, color="red", label="fit")
+        for a in (ax, axr):
+            for lo, hi in sens["regions"]:
+                if hi > lam.min() and lo < lam.max():
+                    a.axvspan(lo, hi, color="orange", alpha=0.15, lw=0)
+        axr.plot(lam[used], (s - fit)[used], ".", ms=2, color="black")
+        axr.axhline(0, color="red")
+        ax.set_ylabel("2.5 log10(e-/s/A per erg/s/cm2/A)")
+        ax.set_title(f"Sensitivity from {sens['standard']} ({sens['reference']}), RMS {sens['rms']:.4f} mag")
+        ax.legend()
+        axr.set_xlabel("Wavelength (A)")
+        axr.set_ylabel("residual (mag)")
+        fig.tight_layout()
+        fig.savefig(self.target_dir + "OUT/" + self.objid + "_sensfunc.png", dpi=200)
+        plt.close(fig)
+
+    def plot_fluxed(self, lam, flux, sigma, valid, ref_flux=None):
+        """Flux-calibrated spectrum, with the tabulated flux for a standard."""
+        o = np.argsort(lam)
+        lam, flux, sigma, valid = lam[o], flux[o], sigma[o], valid[o]
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(lam[valid], flux[valid], color="black", lw=0.7, label="KARP")
+        ax.plot(lam[valid], sigma[valid], color="red", lw=0.5, label="error")
+        if ref_flux is not None:
+            ax.plot(lam[valid], ref_flux[o][valid], color="cyan", lw=0.8, label="tabulated (smoothed)")
+        ax.set_xlabel("Wavelength (A)")
+        ax.set_ylabel("Flux (erg/s/cm2/A)")
+        ax.set_title(f"{self.objid} flux calibrated")
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(self.target_dir + "OUT/" + self.objid + "_fluxed.png", dpi=200)
+        plt.close(fig)

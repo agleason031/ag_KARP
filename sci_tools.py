@@ -45,6 +45,24 @@ def heliocentric_correction(header, site_height=2788.0, ra=None, dec=None):
     corr = sc.radial_velocity_correction("heliocentric", obstime=t, location=site)
     return float(corr.to(u.km / u.s).value)
 
+def exposure_info(header, site_height=2788.0, ra=None, dec=None):
+    """
+    Exposure time (s), mid-exposure airmass (computed from the coordinates, site and
+    time; the header AIRMASS is the start of the exposure), and mid-exposure MJD.
+    """
+    from astropy.coordinates import AltAz
+    ra = ra if ra is not None else str(header["RA"])
+    dec = dec if dec is not None else str(header["DEC"])
+    sc = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
+    site = EarthLocation.from_geodetic(lon=float(header["LONGITUD"]) * u.deg,
+                                       lat=float(header["LATITUDE"]) * u.deg,
+                                       height=site_height * u.m)
+    scale = str(header.get("TIMESYS", "UTC")).strip().lower()
+    exptime = float(header.get("EXPTIME", 0.0))
+    t = Time(header["DATE-OBS"], scale=scale if scale in ("tai", "utc") else "utc") + exptime / 2 * u.s
+    alt = sc.transform_to(AltAz(obstime=t, location=site)).alt
+    return exptime, float(1 / np.sin(alt.radian)), float(t.utc.mjd)
+
 # Bump when the way master calibrations are built changes, so old files on disk are rebuilt
 CAL_VERSION = 4 # 2: overscan subtraction, trimming and per-amplifier gain; 3: flat bias/scaling order;
                 # 4: zeroth-order rows found from the flat (or set in [flat])
@@ -95,6 +113,25 @@ def calibration_key(bias_files, flat_files, geom, flat_cfg):
             st = os.stat(f)
             h.update(f"{os.path.abspath(f)}|{st.st_size}|{st.st_mtime_ns}\n".encode())
     return h.hexdigest()[:16]
+
+def read_arcs(paths, geom):
+    """
+    Arc image from one or more arc frames (overscan-subtracted, trimmed, electrons):
+    frames with the same lamps on are median-combined (removing cosmic rays when there
+    are three or more), and the combinations for different lamps are added. Returns
+    (image, sorted list of lamps that are on).
+    """
+    by_lamps = {}
+    for p in paths:
+        ccd = read_reduced(p, geom)
+        lamps = tuple(sorted(l for l in ("ARGON", "NEON", "KRYPTON")
+                             if str(ccd.meta.get(l, "off")).strip().lower() == "on"))
+        by_lamps.setdefault(lamps, []).append(np.asarray(ccd.data))
+    image = 0
+    for lamps, images in by_lamps.items():
+        image = image + (np.median(images, axis=0) if len(images) > 1 else images[0])
+        log.debug(f"Arc: {len(images)} frame(s) with {', '.join(lamps) or 'no lamps'} on")
+    return image, sorted({l for lamps in by_lamps for l in lamps})
 
 def illuminated_columns(flat):
     """Columns the slit illuminates: median level above half the typical illuminated level."""
@@ -164,6 +201,11 @@ def get_cal_images(bias_files, flat_files, geom, flat_cfg, grapher):
     # Make a master flat: subtract the master bias from each flat, normalize each by its
     # median, then median-combine. (The bias has to come off before scaling, otherwise
     # the scaled bias level stays in the flat.)
+    if not flat_files:
+        log.warning("No flats: no flat-field correction (the flat is 1 everywhere)")
+        final_flat = np.ones(masterbias.shape)
+        _calibration_cache[key] = (masterbias, final_flat)
+        return masterbias, final_flat
     log.info(f"Making the master flat from {len(flat_files)} frames")
     flist = [ccdproc.subtract_bias(read_reduced(f, geom), masterbias) for f in flat_files]
     masterflatDEbias = ccdproc.combine(flist, method='median', scale=inv_median, unit='electron',sigma_clip=False,mem_limit=350e6)

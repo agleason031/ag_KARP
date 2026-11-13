@@ -1,0 +1,30 @@
+# Regions left out of the sensitivity-function fit (flux calibration).
+# Columns: center (A, air), half-width (A), name.
+# The standard's spectrum is divided by its tabulated flux, so its absorption lines
+# mostly cancel; what's left near line cores comes from the difference in resolution
+# and any small wavelength offset, so the cores of the strong lines are left out.
+# Telluric bands are left out too: the sensitivity function should describe the
+# instrument, not that night's water vapour (the science spectrum keeps its telluric
+# absorption).
+# Hydrogen (hot white dwarf and subdwarf standards have broad Balmer lines)
+3835.39  12  H9
+3889.05  15  H8 (+He I 3888.6)
+3970.07  18  H epsilon
+4101.74  22  H delta
+4340.47  25  H gamma
+4861.33  30  H beta
+6562.80  35  H alpha
+# Helium (O and B subdwarf standards: BD+28 4211, Feige 110, HZ 44)
+4026.19   8  He I
+4471.48   8  He I
+4685.70  12  He II
+5411.52  10  He II
+5875.62   8  He I
+# Ca II H & K (cooler standards)
+3933.66   8  Ca II K
+# Telluric absorption
+6879.00  24  O2 B band
+7250.00  90  H2O
+7630.00  60  O2 A band
+8230.00 120  H2O
+9300.00 350  H2O

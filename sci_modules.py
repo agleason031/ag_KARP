@@ -16,7 +16,8 @@ from extract import extract, variance_image
 import wavecal
 from wavecal import C_KMS
 from normalize import fit_continuum, load_mask
-from sci_tools import heliocentric_correction, detector_geometry, read_reduced
+from sci_tools import heliocentric_correction, detector_geometry, read_reduced, read_arcs, exposure_info
+import fluxcal
 from joblib import Parallel, delayed
 import ccdproc
 import logging
@@ -103,15 +104,13 @@ class sci_modules:
         self.wave_solutions = {} # wavecal.WaveSolution per science frame
         self.flexure_dict = {} # {sky line: offset in A} per science frame
         self.geom = detector_geometry(cfg["detector"]) # Amplifier layout, overscan columns, gains
-        # Arc frame, overscan-subtracted and trimmed (electrons)
-        arc = read_reduced(group.arc, self.geom)
-        self.argon = np.asarray(arc.data)
+        # Arc image: overscan-subtracted, trimmed (electrons); repeats median-combined, lamps added
+        self.arc_image, header_lamps = read_arcs(group.arcs, self.geom)
         # Wavelength calibration settings
         self.wcfg = cfg["wavecal"]
-        self.arc_lamps = self.wcfg["lamps"] or [
-            l for l in wavecal.LAMP_FILES if str(arc.meta.get(l, "off")).strip().lower() == "on"]
+        self.arc_lamps = self.wcfg["lamps"] or header_lamps
         if not self.arc_lamps:
-            raise ValueError(f"No lamps are on in the arc header of {group.arc}; set [wavecal] lamps")
+            raise ValueError(f"No lamps are on in the arc headers of {group.arcs}; set [wavecal] lamps")
         self.wave_reference = wavecal.load_reference(group.setup[0], self.wcfg["reference"])
         self.binning_y = int(group.setup[2].split("x")[1]) # Binning along the dispersion (rows)
         self.flexure = self.wcfg["flexure"]
@@ -297,14 +296,14 @@ class sci_modules:
         if scinum in self.wave_solutions:
             return self.wave_solutions[scinum]
         log.debug("Wavelength calibration")
-        arc_spec = wavecal.extract_arc(self.argon, cen_line, self.appw)
+        arc_spec = wavecal.extract_arc(self.arc_image, cen_line, self.appw)
         sol = wavecal.solve(arc_spec, self.arc_lamps, self.wave_reference, self.binning_y, self.wcfg)
         log.info(sol.summary())
         for note in sol.notes:
             log.debug("  " + note)
         with open(f"{self.target_dir}OUT/{self.objid}_wavecal_{scinum}.txt", "w") as f:
             f.write(f"# {sol.summary()}\n")
-            f.write(f"# arc {self.group.arc}, lamps {', '.join(self.arc_lamps)}, reference {sol.reference}\n")
+            f.write(f"# arcs {', '.join(os.path.basename(a) for a in self.group.arcs)}, lamps {', '.join(self.arc_lamps)}, reference {sol.reference}\n")
             for note in sol.notes:
                 f.write(f"# {note}\n")
             f.write(sol.table())
@@ -486,8 +485,98 @@ class sci_modules:
         self.comb_flux = comb_flux
         self.comb_sigma = comb_sig
         self.comb_mask = comb_mask
+        self.comb_ref = ref
         self.snr_bands = bands
         return snr5500
+
+    def load_combined(self):
+        """The combined spectrum from this run, or OUT/{objid}_combined.fits from an earlier one."""
+        if getattr(self, "comb_flux", None) is not None:
+            return
+        path = f"{self.target_dir}OUT/{self.objid}_combined.fits"
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Combined spectrum not found (run with combine = true first): {path}")
+        t = Table.read(path)
+        self.comb_wave = np.asarray(t["Lam"], dtype=float)
+        self.comb_flux = np.asarray(t["Flux"], dtype=float)
+        self.comb_sigma = np.asarray(t["Sigma"], dtype=float)
+        self.comb_mask = np.asarray(t["Mask"])
+        self.comb_ref = int(t.meta["REFFRAME"])
+
+    def reference_exposure(self):
+        """(exptime s, mid-exposure airmass, mid-exposure MJD) of the frame the combined spectrum is scaled to."""
+        header = CCDData.read(self.group.science[self.comb_ref], unit="adu").meta
+        return exposure_info(header, self.site_height, self.target_ra, self.target_dec)
+
+    def sensitivity_function(self, std_name, fcfg):
+        """
+        Sensitivity function from this object's combined spectrum, this object being the
+        standard `std_name` (library name, or fcfg["reference"] for the tabulated flux).
+        Writes OUT/{objid}_sensfunc.fits and a plot. Returns the fluxcal.sensitivity dict
+        plus the standard's name and the reference exposure's MJD.
+        """
+        self.load_combined()
+        exptime, airmass, mjd = self.reference_exposure()
+        ref_lam, ref_flux, ref_label = fluxcal.load_standard(fcfg["reference"] or std_name)
+        ext = fluxcal.load_extinction(fcfg["extinction"])
+        sens = fluxcal.sensitivity(self.comb_wave, self.comb_flux, self.comb_sigma, (self.comb_mask & 2) != 0,
+                                   exptime, airmass, ext, (ref_lam, ref_flux), fcfg)
+        sens.update(standard=self.objid, reference=ref_label, mjd=mjd, setup=self.group.setup)
+        log.info(f"Sensitivity function from {self.objid} ({ref_label}; frame {self.comb_ref}, "
+                 f"{exptime:g} s, airmass {airmass:.3f}): " + "; ".join(sens["notes"])
+                 + f"; valid {sens['range'][0]:.0f}-{sens['range'][1]:.0f} A")
+        t = Table([sens["lam"], sens["sens"], sens["fit"], sens["used"].astype(np.int16), sens["ref_flux"]],
+                  names=("Lam", "Sens", "SensFit", "Used", "RefFlux"))
+        t["Lam"].unit = "Angstrom"
+        t["Sens"].unit = t["SensFit"].unit = "mag" # 2.5 log10(e-/s/A per erg/s/cm2/A)
+        t["RefFlux"].unit = "erg / (s cm2 Angstrom)"
+        t.meta.update({"STANDARD": self.objid, "REFFILE": ref_label, "REFFRAME": self.comb_ref,
+                       "EXPTIME": exptime, "AIRMASS": (airmass, "mid-exposure"),
+                       "EXTINCT": os.path.basename(str(fcfg["extinction"])),
+                       "SENSRMS": (sens["rms"], "mag, RMS of the fit"),
+                       "LAMMIN": sens["range"][0], "LAMMAX": sens["range"][1]})
+        t.write(f"{self.target_dir}OUT/{self.objid}_sensfunc.fits", format="fits", overwrite=True)
+        self.grapher.plot_sensitivity(sens)
+        return sens
+
+    def flux_calibrate(self, sens, fcfg):
+        """
+        Apply a sensitivity function (from sensitivity_function, possibly another
+        object's) to this object's combined spectrum. Writes OUT/{objid}_fluxed.fits with
+        Lam, Flux, Sigma (erg/s/cm^2/A) and Mask (bit 2 also outside the calibrated range).
+        """
+        self.load_combined()
+        exptime, airmass, _ = self.reference_exposure()
+        ext = fluxcal.load_extinction(fcfg["extinction"])
+        flux, sig, valid, extrap = fluxcal.calibrate(
+            self.comb_wave, self.comb_flux, self.comb_sigma, exptime, airmass, ext, sens["lam"], sens["fit"],
+            sens["range"], fcfg["max_extrapolate"])
+        mask = self.comb_mask.copy()
+        mask[~valid] |= 2 # 2 = no data (outside the calibrated range)
+        mask[extrap] |= 8 # 8 = sensitivity extrapolated (linearly) beyond the fitted range
+        cal = self.comb_wave[valid]
+        msg = (f"Flux calibrated with the sensitivity function of {sens['standard']} "
+               f"(frame {self.comb_ref}: {exptime:g} s, airmass {airmass:.3f}); calibrated "
+               f"{cal.min():.0f}-{cal.max():.0f} A, {int(extrap.sum())} pixels extrapolated")
+        if sens["standard"] == self.objid:
+            # Closure test: the standard calibrated with its own sensitivity function
+            ratio = flux / sens["ref_flux"]
+            ok = valid & ~extrap & sens["used"] & np.isfinite(ratio)
+            msg += (f"; closure test: flux / tabulated flux = {np.median(ratio[ok]):.4f} median, "
+                    f"{mad_std(ratio[ok]) * 100:.2f}% scatter over the fitted pixels")
+        log.info(msg)
+        t = Table([self.comb_wave, flux, sig, mask], names=("Lam", "Flux", "Sigma", "Mask"))
+        t["Lam"].unit = "Angstrom"
+        t["Flux"].unit = t["Sigma"].unit = "erg / (s cm2 Angstrom)"
+        t.meta.update({"BUNIT": "erg/s/cm2/A", "STANDARD": sens["standard"], "REFFILE": sens["reference"],
+                       "REFFRAME": self.comb_ref, "EXPTIME": exptime, "AIRMASS": (airmass, "mid-exposure"),
+                       "SENSRMS": (sens["rms"], "mag, RMS of the sensitivity fit"),
+                       "FLUXNOTE": "shape reliable; absolute level depends on slit losses and transparency"})
+        t.write(f"{self.target_dir}OUT/{self.objid}_fluxed.fits", format="fits", overwrite=True)
+        self.grapher.plot_fluxed(self.comb_wave, flux, sig, valid,
+                                 sens["ref_flux"] if sens["standard"] == self.objid else None)
+        self.fluxed_flux, self.fluxed_sigma = flux, sig
+        return flux, sig
 
     def normalize_combined(self, verbose):
         """
@@ -496,15 +585,7 @@ class sci_modules:
         Flux and Sigma divided by the continuum, the Continuum itself, Mask, and
         ContFit (1 = pixel used in the continuum fit). Optional step.
         """
-        if getattr(self, "comb_flux", None) is None:
-            path = f"{self.target_dir}OUT/{self.objid}_combined.fits"
-            if not os.path.exists(path):
-                raise FileNotFoundError(f"Combined spectrum not found (run with combine = true first): {path}")
-            t = Table.read(path)
-            self.comb_wave = np.asarray(t["Lam"], dtype=float)
-            self.comb_flux = np.asarray(t["Flux"], dtype=float)
-            self.comb_sigma = np.asarray(t["Sigma"], dtype=float)
-            self.comb_mask = np.asarray(t["Mask"])
+        self.load_combined()
         lam, flux, sig, mask = self.comb_wave, self.comb_flux, self.comb_sigma, self.comb_mask.copy()
 
         log.debug("Fitting the continuum")

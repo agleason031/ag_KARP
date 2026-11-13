@@ -10,20 +10,21 @@
 [paths]
 raw_dir = "path/to/raw/night"      # Raw KOSMOS frames (k.NNNN.fits)
 output_dir = "path/to/reductions"  # Each object goes in output_dir/<OBJNAME>/
-pattern = "*.fits"
+pattern = "*.fits"                 # "**/*.fits" also searches subdirectories
 
 [frames]
 # KARP sorts frames by their headers: IMAGETYP (Bias / Flat / Object / Comp),
 # OBJNAME, DISPERSR, SLIT, BINX/BINY and the lamp keywords. Science frames are
 # grouped by object and setup; each group gets the biases with the same binning,
-# the flats with the same setup, and the argon arc with the same setup that is
-# nearest in time. Use these to narrow or override that (frame numbers are the
-# digits in the file name, k.0061.fits -> 61).
+# the flats with the same setup, and the arcs with the same setup (for each lamp
+# combination, the arc nearest in time plus repeats taken within an hour of it).
+# Use these to narrow or override that (frame numbers are the digits at the end
+# of the file name, k.0061.fits -> 61).
 objects = []      # e.g. ["G093440"]; empty = every object found
 science = []      # e.g. [61, 62, 63]; empty = all science frames
 bias = []         # empty = automatic
-flat = []         # empty = automatic
-# arc = 64        # default: nearest matching argon arc
+flat = []         # empty = automatic (no flats found: no flat-field correction)
+arc = []          # empty = automatic: per lamp combination, the arcs nearest in time
 exclude = []      # frames never to use, e.g. [9]
 
 [target]
@@ -37,6 +38,8 @@ site_height = 2788.0   # m; not in the headers (APO)
 reduce = true      # calibrate, trace, extract, wavelength-calibrate each frame
 combine = true     # scale and combine the extracted frames (can run alone)
 normalize = true   # optional: continuum-normalize the combined spectrum (can run alone)
+fluxcal = true     # optional: flux-calibrate with a standard star of the same setup
+                   #   (disperser, slit, binning); skipped when there is none
 
 [detector]
 # KOSMOS at 2x1 binning. Column ranges are 0-based and end-exclusive, one per amplifier.
@@ -82,6 +85,23 @@ mask = "default"       # "default" (calib_data/masks/stellar.txt), "none", or a 
 extra_mask = []        # more regions to leave out, e.g. [[5500, 5700]]
 # clip = 1.25          # flag (Mask bit 1) normalized flux above this
 clip_regions = []      # e.g. [[5500, 5700, 1.05]] to flag the zeroth order
+
+[fluxcal]
+# Optional step (steps.fluxcal). A spectrophotometric standard observed with the same
+# setup gives the sensitivity function (count rate / tabulated flux, corrected for
+# extinction and fit with a spline), applied to every object with that setup; writes
+# OUT/<obj>_fluxed.fits (erg/s/cm2/A) and the standard's OUT/<std>_sensfunc.fits.
+# The shape is reliable; the absolute level depends on slit losses and transparency.
+standard = "auto"      # "auto": recognize standards by OBJNAME (calib_data/standards/index.json),
+                       #   or the OBJNAME of the object to use as the standard
+# reference = "my_star.txt"  # tabulated flux (air A, erg/s/cm2/A) for a standard not in the library
+extinction = "apo"     # "apo" (calib_data/extinction/apo.txt) or a file: wavelength (A), mag/airmass
+knot_spacing = 250.0   # A between spline knots
+clip_sigma = 3.0
+mask = "default"       # "default" (calib_data/masks/standard.txt), "none", or a file: center, half-width (A)
+extra_mask = []        # more regions to leave out, e.g. [[5500, 5700]]
+resolution = 0.0       # FWHM (A) the tabulated flux is smoothed to; 0 = 3 pixels
+max_extrapolate = 100.0  # A the sensitivity is extended linearly past the fitted range (Mask bit 8)
 
 [combine]
 # Frames are scaled to the one with the best S/N, then combined pixel by pixel.

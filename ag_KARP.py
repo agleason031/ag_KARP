@@ -29,6 +29,7 @@ import time
 import os
 import sci_tools
 import sci_modules
+import fluxcal
 from config import load_config, ConfigError
 from discover import discover
 
@@ -78,11 +79,22 @@ def write_run_info(cfg, group, target_dir):
         f.write("Settings:\n")
         f.write(json.dumps(cfg, indent=2) + "\n")
 
-def run_group(cfg, group):
+def standard_name(cfg, group):
+    """Library name (or OBJNAME, with [fluxcal] reference) if this group is a flux standard, else None."""
+    std = cfg["fluxcal"]["standard"]
+    if std == "auto":
+        return fluxcal.find_standard(group.objid)
+    return std if group.objid == std else None
+
+def run_group(cfg, group, sensfuncs=None):
     """
     Reduce one object/setup group. Returns its sci_modules instance. Everything logged
     meanwhile also goes to <output_dir>/<object>/OUT/KARP_log.txt (rewritten each run).
+    sensfuncs: {setup: [sensitivity functions]} shared between groups; a standard star
+    adds its own, and any group with the same setup is flux calibrated with the one
+    nearest in time (standards are run first, see main).
     """
+    sensfuncs = {} if sensfuncs is None else sensfuncs
     steps = cfg["steps"]
     verbose = cfg["output"]["verbose"]
     target_dir = os.path.join(cfg["paths"]["output_dir"], group.out_name) + "/"
@@ -116,6 +128,18 @@ def run_group(cfg, group):
         # Optional: continuum-normalize the combined spectrum (OUT/<objid>_combined.fits)
         if steps["normalize"]:
             sci_mods.normalize_combined(verbose)
+
+        # Optional: flux calibration, with a standard star observed with the same setup
+        if steps["fluxcal"]:
+            std = standard_name(cfg, group)
+            if std is not None:
+                sensfuncs.setdefault(group.setup, []).append(sci_mods.sensitivity_function(std, cfg["fluxcal"]))
+            available = sensfuncs.get(group.setup, [])
+            if available:
+                _, _, mjd = sci_mods.reference_exposure()
+                sci_mods.flux_calibrate(min(available, key=lambda s: abs(s["mjd"] - mjd)), cfg["fluxcal"])
+            else:
+                log.info("No standard star observed with this setup: flux calibration skipped")
         log.info(f"{group.objid} took {timedelta(seconds=time.perf_counter() - start)}")
     except Exception:
         log.exception(f"KARP stopped with an error while reducing {group.objid}")
@@ -158,10 +182,12 @@ def main(argv=None, overrides=None):
         log.info("- " * i + "><(((º>")
     starttime = time.perf_counter()
 
-    results = {}
+    # Standards first, so their sensitivity functions are ready for the other objects
+    groups = sorted(groups, key=lambda g: standard_name(cfg, g) is None)
+    results, sensfuncs = {}, {}
     for group in groups:
         log.info(f"\n=== {group.objid} ===")
-        results[group.out_name] = run_group(cfg, group)
+        results[group.out_name] = run_group(cfg, group, sensfuncs)
 
     #play finishing sound
     if cfg["output"]["sound"]:
