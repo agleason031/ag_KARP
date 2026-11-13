@@ -4,7 +4,8 @@ KARP: KOSMOS Astronomical Reduction Pipeline. Command line and run control.
     python -m karp config.toml          # reduce every object found (or: karp, python ag_KARP.py)
     python -m karp config.toml --list   # only show which frames would be used
 
-Originally by Chase L. Smith and Max Moe; reworked by Alex Gleason.
+Created by Chase L. Smith, Max Moe
+Improved and Modified by Alex Gleason
 
 ><(((º>
 """
