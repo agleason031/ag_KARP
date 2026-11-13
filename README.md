@@ -230,6 +230,15 @@ written to `tests/regression/runs/`.
 - The [O I] 5577 Å sky line comes out 0.4–0.6 Å below the 6300/6364 Å lines on both test
   nights (argon and krypton arcs), which points at the sky-line measurement, not the arc
   solution. The flexure check uses the median of the lines and defaults to report-only.
+- Bright night-sky lines (e.g. [O I] 5577 Å, Na D) can leave residuals in the extracted
+  spectrum, mainly for faint, sky-dominated targets: up to ~10σ at 5577 Å on the 2.1″-slit
+  test night (J0543), ~4σ on the 0.87″ night. Ruled out as the main cause: the curvature of
+  the lines across the slit (measured from the arc; sampling the background along it didn't
+  help) and the slit illumination (5577 Å is flat along the slit to 0.3%).
+  `[extraction] sky_order = 2` removes most of the 5577 Å residual but costs 6–18% S/N.
+  Not yet explained: a step in the sky level at the amplifier boundary (column 512), which
+  the right-hand background window crosses when the trace is near column 480, about
+  −25 e⁻ on the J0543 frames (sky ~130–190 e⁻).
 - The arc and sky line-finding windows are set in binned pixels. Their right size depends
   on the line width, which depends on the slit as much as on the binning. They work at 2×1
   with the 0.87″ slit and at 2×2 with the 2.1″ slit.
