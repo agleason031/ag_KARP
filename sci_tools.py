@@ -18,7 +18,6 @@ from numba import njit, prange
 from numpy.polynomial import Chebyshev
 import numpy as np
 import ccdproc
-import ast
 import csv
 import hashlib
 import inspect
@@ -38,53 +37,34 @@ def inv_median(im):
     """ccdproc.combine multiplies each image by this, so return 1/median to normalize."""
     return 1 / np.median(im.data)
 
-#returns correction needed for earth's motion
-def heliocentric_correction(objRA, objDEC, otime):
-    # Find heliocentric correction velocity
-    # lam = lam * (1+v)/c in km/s
-    # Take the observed date and the location of APO
-    # Calculate the heliocentric velocity of earth relative to the star
-    # This is the velocity, v that we include in the code
-    
-    # Megan's heliocentric function
-    #EX: helioCorrect("05 02 58.72 -70 49 44.7", "Las Campanas Observatory", "2017-10-26 05:03")
-    #EX: t = Time("2015-06-30 23:59:60.500")
-    coord = str(objRA + " " + objDEC) # Get Coordinates
-    site = EarthLocation.of_site('Apache Point Observatory') # Get the site (Apache point observatory)
-    t =  Time(otime)
-    sc = SkyCoord(coord, unit=(u.hourangle, u.deg)) # Make a SkyCoord Object for our star
-    heliocorr = sc.radial_velocity_correction('heliocentric', obstime=t, location=site) # Heliocentric radial velocity correction
-    #print("heliocorr",heliocorr)
-    # Map to v_helio
-    correction = heliocorr.to(u.km/u.s)
-    #print("correction",correction)
-    correction = str(correction)
-    correction = correction.replace('km / s', '')
-    return(float(correction))
+def heliocentric_correction(header, site_height=2788.0, ra=None, dec=None):
+    """
+    Heliocentric radial-velocity correction (km/s) for one exposure, to be applied
+    as lam * (1 + v/c). Uses the frame's own header: RA/DEC (unless overridden),
+    the observatory latitude/longitude, and the mid-exposure time (DATE-OBS is the
+    start of the exposure, in the time system given by TIMESYS).
+    """
+    ra = ra if ra is not None else str(header["RA"])
+    dec = dec if dec is not None else str(header["DEC"])
+    sc = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
+    site = EarthLocation.from_geodetic(lon=float(header["LONGITUD"]) * u.deg,
+                                       lat=float(header["LATITUDE"]) * u.deg,
+                                       height=site_height * u.m)
+    scale = str(header.get("TIMESYS", "UTC")).strip().lower()
+    t = Time(header["DATE-OBS"], scale=scale if scale in ("tai", "utc") else "utc")
+    t = t + float(header.get("EXPTIME", 0.0)) / 2 * u.s # Middle of the exposure
+    corr = sc.radial_velocity_correction("heliocentric", obstime=t, location=site)
+    return float(corr.to(u.km / u.s).value)
 
 # Bump when the way master calibrations are built changes, so old files on disk are rebuilt
 CAL_VERSION = 3 # 2: overscan subtraction, trimming and per-amplifier gain; 3: flat bias/scaling order
 
-def detector_geometry(params):
+def detector_geometry(det):
     """
-    Detector layout from the parameter file, with defaults for KOSMOS at 2x1 binning.
-    Column ranges are 0-based and end-exclusive. Each amplifier has its data
-    columns, its overscan columns, and its gain (e-/ADU).
+    The parts of the [detector] config that define how raw frames are turned into
+    trimmed, overscan-subtracted electron images (see config.py for the defaults).
     """
-    def lst(key, default):
-        v = params.get(key, "").strip()
-        return ast.literal_eval(v) if v else default
-    geom = {
-        "amp_data": lst("amp_data", [[0, 512], [512, 1024]]),
-        # Overscan strips are cols 1024-1073 (amp A) and 1074-1123 (amp B); the first
-        # 10 columns of each carry charge left over from the data and are skipped
-        "amp_overscan": lst("amp_overscan", [[1034, 1074], [1084, 1124]]),
-        "gain": lst("gain", [0.6, 0.6]), # KOSMOS spec sheet value; flats suggest ~0.72 / ~0.77
-        "overscan_order": int(params.get("overscan_order", 3)),
-    }
-    if not (len(geom["amp_data"]) == len(geom["amp_overscan"]) == len(geom["gain"])):
-        raise ValueError("amp_data, amp_overscan and gain need one entry per amplifier")
-    return geom
+    return {k: det[k] for k in ("amp_data", "amp_overscan", "gain", "overscan_order")}
 
 def overscan_trim(ccd, geom):
     """

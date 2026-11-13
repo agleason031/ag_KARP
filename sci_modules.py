@@ -14,11 +14,10 @@ from astropy.table import Table
 from astropy.stats import mad_std
 from numpy.polynomial import Polynomial
 from functions import fit_cent_gaussian, G, build_fit_args, gaussian_integral_vec
-from functions import format_fits_filename, y_lam, con_lam, string_to_bool, optional_float
+from functions import y_lam, con_lam
 from sci_tools import heliocentric_correction, fit_all_fluxes, detector_geometry, read_reduced
 from joblib import Parallel, delayed
 import ccdproc
-import ast
 import os
 import warnings
 import numpy as np
@@ -29,41 +28,45 @@ import numpy as np
 #-------------------------
 
 class sci_modules:
-    def __init__ (self, params, grapher):
-        # assign relevant values
-        self.dloc = str(params["dloc"]) # Location to store output data
-        self.objid = str(params["objid"]) # Object ID
-        self.objRA = str(params["objRA"]) # Object RA in the form "05 02 58.72"
-        self.objDEC = str(params["objDEC"]) # Object DEC in the form "-70 49 44.7"
-        self.otime = str(params["obsTime"]) # The time the object was observed, listed as t = Time("2015-06-30 23:59:60.500")
-        self.scistart = int(params["scistart"]) #first sci image
-        self.argnum = int(params["argnum"]) # The image number of the Argon spectral calibration image
-        self.appw = int(np.round(float(params["appw"])-1)/2) # So an appature width inputu of 13 is two 6 pixel sides, and if you put 14 it rounds to 13
-        self.buffw = int(params["buffw"]) # Width of the buffer in pixels (on either side of the appature, so 4 is two, 4 pix buffers su,etrically spaced around the center line)
-        self.bckw = int(params["bckw"]) # The width of the background in pixels, (on either side of the buffer)
-        self.trace_order = int(params.get("trace_order", 3)) # Polynomial order of the trace fit
-        trace_col = params.get("trace_col", "").strip() # Optional starting column for the trace; found automatically if blank
-        self.trace_col = int(trace_col) if trace_col else None
-        self.target_dir = str(params["target_dir"]) 
-        self.norm_line_width = int(params["norm_line_width"])  # When normalizing spectra, this is the one-half width of the line KARP will try and fit at each point
-        self.norm_line_boxcar = int(params["norm_line_boxcar"]) # When normalizing the spectra,
+    def __init__ (self, cfg, group, target_dir, grapher):
+        """
+        cfg: full config (config.load_config); group: discover.Group with this
+        object's frames; target_dir: output directory for this object (ends in "/").
+        """
+        self.group = group
+        self.objid = group.objid # Object ID
+        self.target_dir = target_dir
+        ext = cfg["extraction"]
+        self.appw = int(np.round(float(ext["aperture"])-1)/2) # So an appature width inputu of 13 is two 6 pixel sides, and if you put 14 it rounds to 13
+        self.buffw = int(ext["buffer"]) # Width of the buffer in pixels (on either side of the appature, so 4 is two, 4 pix buffers su,etrically spaced around the center line)
+        self.bckw = int(ext["background"]) # The width of the background in pixels, (on either side of the buffer)
+        self.trace_order = cfg["trace"]["order"] # Polynomial order of the trace fit
+        self.trace_col = cfg["trace"]["col"] # Optional starting column for the trace; found automatically if None
+        norm = cfg["normalization"]
+        self.norm_line_width = norm["line_width"]  # When normalizing spectra, this is the one-half width of the line KARP will try and fit at each point
+        self.norm_line_boxcar = norm["boxcar"] # When normalizing the spectra, the boxcar used to smooth the continuum
         # Cosmic-ray cleaning of the 2D science frames (L.A.Cosmic)
-        self.cr_clean = string_to_bool(params.get("cr_clean", "true"))
-        self.readnoise = float(params.get("readnoise", 5.7)) # electrons; 5.7 measured from the 2024-09-29 bias frames
-        self.cr_sigclip = float(params.get("cr_sigclip", 4.5)) # detection threshold in sigma
-        # Optional masking thresholds (blank or none = off). Masked pixels keep their
+        self.cr_clean = cfg["cosmic_rays"]["enabled"]
+        self.cr_sigclip = cfg["cosmic_rays"]["sigclip"] # detection threshold in sigma
+        self.readnoise = cfg["detector"]["readnoise"] # electrons
+        self.full_well = cfg["detector"]["full_well"] # electrons
+        # Optional masking thresholds (None = off). Masked pixels keep their
         # value but get a nonzero Mask flag in the output tables.
-        self.norm_clip = optional_float(params.get("norm_clip")) # normalized flux >= this is masked, per frame
-        self.comb_clip = optional_float(params.get("comb_clip")) # combined flux > this is masked
+        self.norm_clip = norm["clip"] # normalized flux >= this is masked, per frame
+        self.comb_clip = cfg["combine"]["clip"] # combined flux > this is masked
         # List of [lam_min, lam_max, threshold]: combined flux above threshold in that range is masked
-        self.comb_clip_regions = ast.literal_eval(params.get("comb_clip_regions", "").strip() or "[]")
+        self.comb_clip_regions = cfg["combine"]["clip_regions"]
+        # Heliocentric correction inputs: coordinates from headers unless overridden
+        self.target_ra = cfg["target"]["ra"]
+        self.target_dec = cfg["target"]["dec"]
+        self.site_height = cfg["target"]["site_height"]
         self.gwave = []
         self.med_comb = []
         self.sig_final = []
         
         self.grapher = grapher
         
-        self.v_helio = heliocentric_correction(self.objRA, self.objDEC, self.otime)
+        self.v_helio_dict = {} # Heliocentric correction (km/s) per science frame
         self.flux_raw_cor1_dict = {}
         self.wavelengths_dict = {}
         self.sky_raw_dict = {}
@@ -71,15 +74,13 @@ class sci_modules:
         self.cen_line_dict = {}
         self.lam_fit_dict = {}
         self.lam_fit_linenum_dict = {}
-        self.geom = detector_geometry(params) # Amplifier layout, overscan columns, gains
+        self.geom = detector_geometry(cfg["detector"]) # Amplifier layout, overscan columns, gains
         # Arc frame, overscan-subtracted and trimmed (electrons)
-        self.argon = np.asarray(read_reduced(format_fits_filename(self.dloc, self.argnum), self.geom).data)
+        self.argon = np.asarray(read_reduced(group.arc, self.geom).data)
         
     #does all the image reduction through wavelength calibration
-    def reduce_image(self, scinum, global_args):
-        sci_list, masterbias, final_flat, verbose = global_args   
-    
-        sci_location = sci_list[scinum - self.scistart]
+    def reduce_image(self, scinum, masterbias, final_flat, verbose):
+        sci_location = self.group.science[scinum]
         
         # Make a output text file detaling relevant fit paramaters that KARP calculates
         # Initalize directory for reduction plots for this science image
@@ -98,6 +99,9 @@ class sci_modules:
         else:
             # Overscan-subtract, trim and convert to electrons, then remove the bias structure and flat-field
             sci_raw = read_reduced(sci_location, self.geom)
+            # Heliocentric correction for this exposure, from its header
+            self.v_helio_dict[scinum] = heliocentric_correction(
+                sci_raw.meta, self.site_height, self.target_ra, self.target_dec)
             sci_final = np.asarray(ccdproc.subtract_bias(sci_raw, masterbias).data)/final_flat
             sci_final_1 = sci_final
 
@@ -105,7 +109,7 @@ class sci_modules:
                 # Data are in electrons and still include sky, as L.A.Cosmic's noise model expects
                 sci_final_1, cr_mask = ccdproc.cosmicray_lacosmic(
                     sci_final_1, sigclip=self.cr_sigclip, gain=1.0, readnoise=self.readnoise,
-                    satlevel=150000, verbose=False) # Full well, 150k e- (KOSMOS spec sheet)
+                    satlevel=self.full_well, verbose=False)
                 msg = f"Cosmic rays: {int(cr_mask.sum())} pixels cleaned in image {scinum}"
                 print(msg)
                 with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
@@ -266,12 +270,13 @@ class sci_modules:
         print("Fitting cubic polynomial")
         y_lam_fit = np.polyfit(cfits / 2000, lam_ok, 3)
 
-        # Wavelength of each kept pixel, with heliocentric correction
-        wavelengths = y_lam(y_pix, y_lam_fit, self.v_helio)
+        # Wavelength of each kept pixel, with this exposure's heliocentric correction
+        v_helio = self.v_helio_dict[scinum]
+        wavelengths = y_lam(y_pix, y_lam_fit, v_helio)
 
         if (verbose == True):
-            print("v_helio:",self.v_helio,"km/s") # -4 km/s for G093440
-            self.grapher.plot_sci_lamcal(y_lam, y_pix, flux_raw_cor1, y_lam_fit, self.v_helio, scinum)
+            print("v_helio:",v_helio,"km/s") # -4 km/s for G093440
+            self.grapher.plot_sci_lamcal(y_lam, y_pix, flux_raw_cor1, y_lam_fit, v_helio, scinum)
 
         # Arc solution residuals: lab wavelength minus the fit at the fitted center.
         # Evaluated without the heliocentric correction, since the arc lines are at rest.
@@ -306,11 +311,11 @@ class sci_modules:
                 f.write("Mean Wavelength residual (delLAM):"+str(np.mean(del_lam))+"\n")
                 f.write("Mean Velocity residual (delVEL):"+str(np.mean(res_vel))+"\n")
 
-            self.grapher.plot_sci_lamcal_res(y_lam, y_pix, flux_raw_cor1, rnErr, y_lam_fit, self.v_helio, scinum)
+            self.grapher.plot_sci_lamcal_res(y_lam, y_pix, flux_raw_cor1, rnErr, y_lam_fit, v_helio, scinum)
 
             # Dispersion over the full detector (wavelength decreases with row number)
-            lam_out_max = y_lam(0, y_lam_fit, self.v_helio) # Wavelength at the first row
-            lam_out_min = y_lam(n_rows - 1, y_lam_fit, self.v_helio) # Wavelength at the last row
+            lam_out_max = y_lam(0, y_lam_fit, v_helio) # Wavelength at the first row
+            lam_out_min = y_lam(n_rows - 1, y_lam_fit, v_helio) # Wavelength at the last row
 
             dispersion = (lam_out_max-lam_out_min)/n_rows
             print("lam_out_max:",lam_out_max)

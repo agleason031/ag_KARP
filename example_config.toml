@@ -1,0 +1,81 @@
+# KARP example configuration
+#
+#   python ag_KARP.py example_config.toml --list   # check which frames KARP will use
+#   python ag_KARP.py example_config.toml          # reduce
+#
+# Only [paths] is required. Every other setting below is shown with its default
+# (see config.py); delete or comment out anything you don't need to change.
+# Settings that default to "not set" are shown commented out.
+
+[paths]
+raw_dir = "path/to/raw/night"      # Raw KOSMOS frames (k.NNNN.fits)
+output_dir = "path/to/reductions"  # Each object goes in output_dir/<OBJNAME>/
+pattern = "*.fits"
+
+[frames]
+# KARP sorts frames by their headers: IMAGETYP (Bias / Flat / Object / Comp),
+# OBJNAME, DISPERSR, SLIT, BINX/BINY and the lamp keywords. Science frames are
+# grouped by object and setup; each group gets the biases with the same binning,
+# the flats with the same setup, and the argon arc with the same setup that is
+# nearest in time. Use these to narrow or override that (frame numbers are the
+# digits in the file name, k.0061.fits -> 61).
+objects = []      # e.g. ["G093440"]; empty = every object found
+science = []      # e.g. [61, 62, 63]; empty = all science frames
+bias = []         # empty = automatic
+flat = []         # empty = automatic
+# arc = 64        # default: nearest matching argon arc
+exclude = []      # frames never to use, e.g. [9]
+
+[target]
+# Coordinates for the heliocentric correction come from each frame's RA/DEC
+# header, and the time from DATE-OBS (mid-exposure). Override if needed:
+# ra = "23:50:59.00"
+# dec = "+2:36:15.5"
+site_height = 2788.0   # m; not in the headers (APO)
+
+[steps]
+reduce = true      # calibrate, trace, extract, wavelength-calibrate each frame
+normalize = true   # continuum-normalize each frame (needs reduce in the same run)
+combine = true     # median-combine the normalized frames (can run alone)
+fit_lines = false  # velocity and metal-line fits on the combined spectrum
+optimize = false   # search aperture/normalization settings for the best S/N (slow)
+
+[detector]
+# KOSMOS at 2x1 binning. Column ranges are 0-based and end-exclusive, one per amplifier.
+amp_data = [[0, 512], [512, 1024]]
+amp_overscan = [[1034, 1074], [1084, 1124]]
+gain = [0.6, 0.6]       # e-/DN (spec sheet)
+readnoise = 5.7         # e-
+full_well = 150000.0    # e-
+overscan_order = 3
+
+[trace]
+order = 3      # polynomial order of the trace
+# col = 480    # starting column for the trace search (default: brightest column)
+
+[extraction]
+aperture = 20     # full aperture width, pixels
+buffer = 20       # gap between aperture and background, pixels per side
+background = 25   # background region width, pixels per side
+
+[cosmic_rays]
+enabled = true
+sigclip = 4.5
+
+[normalization]
+line_width = 250   # half-width (pixels) of the local continuum fit
+boxcar = 70        # smoothing of the fitted continuum, pixels
+# clip = 1.3       # flag normalized flux >= this in the Mask column
+
+[combine]
+# clip = 1.25                         # flag combined flux > this
+clip_regions = []                     # e.g. [[5500, 5700, 1.05]] to flag the zeroth order
+jackknife = false                     # also report S/N with each frame left out
+
+[lines]
+# Half-widths (A) of the 16 metal-line windows used by fit_lines
+metal_mask = [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+
+[output]
+verbose = false
+sound = false   # play a short tone when KARP finishes

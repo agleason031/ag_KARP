@@ -5,7 +5,6 @@ aux grapher module for KARP
 '''
 
 #import packages
-from functions import string_to_bool
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -17,13 +16,14 @@ def G(x, a, mu, sigma, bck):
 	# A 4d Gaussian
     
 class grapher:
-    def __init__ (self, params):
-        self.objid = str(params["objid"]) # Object ID
-        self.target_dir = str(params["target_dir"])
-        self.verbose = string_to_bool(params["verbose"])
-        self.appw = int(np.round(float(params["appw"])-1)/2) # So an appature width inputu of 13 is two 6 pixel sides, and if you put 14 it rounds to 13
-        self.buffw = int(params["buffw"]) # Width of the buffer in pixels (on either side of the appature, so 4 is two, 4 pix buffers su,etrically spaced around the center line)
-        self.bckw = int(params["bckw"]) # The width of the background in pixels, (on either side of the buffer)
+    def __init__ (self, cfg, objid, target_dir):
+        self.objid = objid # Object ID
+        self.target_dir = target_dir # Output directory for this object (ends in "/")
+        self.verbose = cfg["output"]["verbose"]
+        ext = cfg["extraction"]
+        self.appw = int(np.round(float(ext["aperture"])-1)/2) # So an appature width inputu of 13 is two 6 pixel sides, and if you put 14 it rounds to 13
+        self.buffw = int(ext["buffer"]) # Width of the buffer in pixels (on either side of the appature, so 4 is two, 4 pix buffers su,etrically spaced around the center line)
+        self.bckw = int(ext["background"]) # The width of the background in pixels, (on either side of the buffer)
 
     #fit individual plots for each metal line
     def metal_line_plt(self, metal_fits, gwave, masks, med_comb, lines, center_shifts):

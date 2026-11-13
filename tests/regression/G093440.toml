@@ -1,0 +1,47 @@
+# Regression configuration for the G093440 test set (KOSMOS, blue grating,
+# 0.87" slit, 2x1 binning, 2024-09-29). regress.py fills in the paths.
+# Settings that match the defaults in config.py are written out anyway, so a
+# change of default doesn't silently change the reference.
+
+[paths]
+raw_dir = "test_data/in"
+output_dir = "tests/regression/runs/unset"
+
+[steps]
+reduce = true
+normalize = true
+combine = true
+fit_lines = false
+optimize = false
+
+[detector]
+amp_data = [[0, 512], [512, 1024]]
+amp_overscan = [[1034, 1074], [1084, 1124]]
+gain = [0.6, 0.6]
+readnoise = 5.7
+full_well = 150000
+overscan_order = 3
+
+[trace]
+order = 3
+
+[extraction]
+aperture = 20
+buffer = 20
+background = 25
+
+[cosmic_rays]
+enabled = true
+sigclip = 4.5
+
+[normalization]
+line_width = 250
+boxcar = 70
+
+[combine]
+clip_regions = []
+jackknife = false
+
+[output]
+verbose = false
+sound = false

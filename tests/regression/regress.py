@@ -10,22 +10,23 @@ compares them against the saved reference.
     python tests/regression/regress.py compare
 
 The test FITS frames are expected in test_data/in/ (not tracked by git).
-Each run writes its full output (plots, FITS) to tests/regression/runs/<timestamp>/.
+Each run writes its full output (plots, FITS) to tests/regression/runs/<timestamp>/G093440/.
+Settings are in G093440.toml; --set section.key=value overrides one for a single run.
 """
 import argparse
 import datetime
 import json
-import os
-import runpy
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-PARAMS = HERE / "G093440.kparam"
+CONFIG = HERE / "G093440.toml"
+OBJECT = "G093440"
 REF_DIR = HERE / "reference"
 REF_NPZ = REF_DIR / "G093440_reference.npz"
 REF_META = REF_DIR / "G093440_reference.json"
@@ -41,47 +42,30 @@ ATOL = 1e-9
 # running the pipeline
 # ---------------------------------------------------------------------------
 
-def write_run_params(run_dir, overrides=None):
-    """
-    Copy the parameter file with dloc and target_dir pointed at absolute paths,
-    and any `overrides` ({key: value}) applied.
-    """
-    overrides = dict(overrides or {})
-    lines = []
-    for line in PARAMS.read_text().splitlines():
-        key = line.split("=", 1)[0].strip()
-        if key == "dloc":
-            line = f"dloc = {DATA}/"
-        elif key == "target_dir":
-            line = f"target_dir = {run_dir}/"
-        elif key in overrides and not line.lstrip().startswith("#"):
-            line = f"{key} = {overrides.pop(key)}"
-        lines.append(line)
-    lines += [f"{k} = {v}" for k, v in overrides.items()] # keys not in the file
-    path = run_dir / "run.kparam"
-    path.write_text("\n".join(lines) + "\n")
-    return path
+def parse_override(kv):
+    """'section.key=value' with a TOML value (e.g. cosmic_rays.enabled=false) -> (key, value)."""
+    key, value = kv.split("=", 1)
+    if "." not in key:
+        sys.exit(f"--set needs section.key=value, got {kv!r}")
+    return key.strip(), tomllib.loads(f"v = {value}")["v"]
 
 
 def run_pipeline(overrides=None):
-    """Run ag_KARP.py as __main__ and return (its globals, run directory)."""
+    """Run KARP on the test set and return (its sci_modules instance, output dir for the object)."""
     if not DATA.is_dir():
         sys.exit(f"Test data not found at {DATA}")
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = RUNS / stamp
     run_dir.mkdir(parents=True)
-    kparam = write_run_params(run_dir, overrides)
 
     sys.path.insert(0, str(REPO))
-    old_argv, old_cwd = sys.argv, os.getcwd()
-    sys.argv = ["ag_KARP.py", "--kp", str(kparam)]
-    os.chdir(REPO)
-    try:
-        g = runpy.run_path(str(REPO / "ag_KARP.py"), run_name="__main__")
-    finally:
-        sys.argv = old_argv
-        os.chdir(old_cwd)
-    return g, run_dir
+    import ag_KARP
+    settings = {"paths.raw_dir": str(DATA), "paths.output_dir": str(run_dir)}
+    settings.update(overrides or {})
+    results = ag_KARP.main([str(CONFIG)], overrides=settings)
+    if list(results) != [OBJECT]:
+        sys.exit(f"Expected one object {OBJECT}, got {list(results)}")
+    return results[OBJECT], run_dir / OBJECT
 
 
 def block_mean(img, by=64, bx=16):
@@ -92,12 +76,11 @@ def block_mean(img, by=64, bx=16):
     return img[:ny2, :nx2].reshape(ny2 // by, by, nx2 // bx, bx).mean(axis=(1, 3))
 
 
-def snapshot(g, run_dir):
+def snapshot(sm, out_dir):
     """Collect the arrays worth tracking from a finished run."""
     from astropy.table import Table
     import sci_tools
 
-    sm = g["sci_mods"]
     snap = {}
 
     # Calibration frames: stats + block-averaged thumbnails (full frames are 37 MB each).
@@ -107,15 +90,14 @@ def snapshot(g, run_dir):
         snap[f"{name}_thumb"] = block_mean(img)
         snap[f"{name}_stats"] = np.array([np.nanmedian(img), np.nanmean(img), np.nanstd(img)])
 
-    snap["v_helio"] = np.array([sm.v_helio])
-
     for n in sorted(sm.cen_line_dict):
+        snap[f"v_helio_{n}"] = np.array([sm.v_helio_dict[n]])
         snap[f"cen_line_{n}"] = np.asarray(sm.cen_line_dict[n])
         snap[f"arc_centers_{n}"] = np.array([fit[1] for fit in sm.lam_fit_dict[n]])
         snap[f"flux_raw_{n}"] = np.asarray(sm.flux_raw_cor1_dict[n])
         snap[f"sky_raw_{n}"] = np.asarray(sm.sky_raw_dict[n])
         snap[f"wavelengths_{n}"] = np.asarray(sm.wavelengths_dict[n])
-        out = run_dir / "OUT" / f"{sm.objid}_{n}_OUT.fits"
+        out = out_dir / "OUT" / f"{sm.objid}_{n}_OUT.fits"
         if out.exists():
             t = Table.read(out)
             snap[f"norm_lam_{n}"] = np.asarray(t["Lam"])
@@ -129,7 +111,7 @@ def snapshot(g, run_dir):
     snap["comb_sigma"] = np.asarray(sm.sig_final)
     if hasattr(sm, "comb_mask"):
         snap["comb_mask"] = np.asarray(sm.comb_mask)
-    snap["snr"] = np.array([g.get("SNR", np.nan)])
+    snap["snr"] = np.array([sm.snr if sm.snr is not None else np.nan])
     return snap
 
 
@@ -230,23 +212,26 @@ def main():
     ap.add_argument("--note", default="", help="reason for a new reference (stored in its metadata)")
     ap.add_argument("--ref", type=Path, default=None,
                     help="compare against this snapshot.npz (e.g. an earlier run) instead of the saved reference")
-    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
-                    help="override a parameter for this run (repeatable)")
+    ap.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE",
+                    help="override a setting for this run, value in TOML syntax (repeatable), "
+                         "e.g. --set cosmic_rays.enabled=false")
     args = ap.parse_args()
-    overrides = dict(kv.split("=", 1) for kv in args.set)
+    overrides = dict(parse_override(kv) for kv in args.set)
     if overrides and args.command == "make-reference":
-        sys.exit("--set is for experiments; edit G093440.kparam to change the reference parameters.")
+        sys.exit("--set is for experiments; edit G093440.toml to change the reference settings.")
 
-    g, run_dir = run_pipeline(overrides)
-    snap = snapshot(g, run_dir)
-    np.savez_compressed(run_dir / "snapshot.npz", **snap)
+    sm, out_dir = run_pipeline(overrides)
+    snap = snapshot(sm, out_dir)
+    np.savez_compressed(out_dir / "snapshot.npz", **snap)
+    run_dir = out_dir
 
     if args.command == "make-reference":
         REF_DIR.mkdir(exist_ok=True)
         np.savez_compressed(REF_NPZ, **snap)
         meta = {"created": datetime.datetime.now().isoformat(timespec="seconds"),
                 "git": git_info(), "note": args.note,
-                "snr": float(snap["snr"][0]), "v_helio": float(snap["v_helio"][0])}
+                "snr": float(snap["snr"][0]),
+                "v_helio": {k[len("v_helio_"):]: float(v[0]) for k, v in snap.items() if k.startswith("v_helio_")}}
         REF_META.write_text(json.dumps(meta, indent=2) + "\n")
         print(f"\nReference written to {REF_NPZ}")
         print(json.dumps(meta, indent=2))
