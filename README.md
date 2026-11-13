@@ -56,7 +56,7 @@ extractions, are skipped. Each group is written to `output_dir/<OBJNAME>/`.
 | Extraction | Sky fit per row across both background windows. Optimal extraction (Horne 1986) uses a smoothed data-derived profile and outlier rejection; boxcar is also available. Errors come from a per-pixel variance image (Poisson + read noise, through the flat). See `[extraction]`. |
 | Wavelength calibration | The arc is extracted along each frame's trace and its lines are found and centroided. They are identified against NIST line lists starting from a stored reference solution, then fit with a clipped polynomial (order chosen automatically by default). Night-sky lines are measured to check flexure, which can be reported or corrected. A heliocentric correction is applied to each frame from its header. See `[wavecal]`. |
 | Combine | Frames are interpolated onto the best frame's wavelength grid and scaled to it with a smooth function of wavelength. The default combination is an inverse-variance weighted mean with outlier rejection based on the errors; plain mean and median are also available. See `[combine]`. |
-| Flux calibration (optional) | Uses a spectrophotometric standard observed with the same disperser, slit and binning, recognized by its OBJNAME. Its combined spectrum is converted to a count rate per Å and corrected for extinction (APO curve, mid-exposure airmass). Dividing by the tabulated flux (HST CALSPEC), smoothed to KOSMOS resolution, gives the sensitivity, which is fit with a spline that leaves out line cores and telluric bands. It is applied to every object with that setup, using the standard nearest in time. Objects with no matching standard are not flux calibrated. See `[fluxcal]`. |
+| Flux calibration (optional) | Uses a spectrophotometric standard observed with the same disperser, slit and binning, recognized by its OBJNAME. Its combined spectrum is converted to a count rate per Å and corrected for extinction (APO curve, mid-exposure airmass). It is compared with the tabulated flux (HST CALSPEC) at matched resolution: at each wavelength the sharper of the two is smoothed to the other's resolution, after a fitted wavelength offset between the standard and its tabulated spectrum is taken out. The ratio is the sensitivity, which is fit with a spline that leaves out line cores and telluric bands. It is applied to every object with that setup, using the standard nearest in time. Objects with no matching standard are not flux calibrated. See `[fluxcal]`. |
 | Normalization (optional) | A cubic spline continuum with asymmetric sigma clipping and a line mask (`[normalization]`). It isn't required for a valid reduction; turn it off with `[steps] normalize = false`. |
 
 The steps in `[steps]` can be run separately. For example, `reduce = false` re-combines or
@@ -132,7 +132,12 @@ python wavecal.py make-reference OUT/OBJ_wavecal_61.txt --disperser red --binnin
 
 The shape of a fluxed spectrum is reliable. The absolute level is only as good as the match
 in slit losses (seeing, centering) and transparency between the standard and the target.
-The log reports a closure test: the standard calibrated with its own sensitivity function,
+CALSPEC's optical spectra (HST STIS G430L/G750L) have a resolution of 5.5 Å FWHM below
+about 5700 Å and 9.8 Å above, usually coarser than KOSMOS. KARP takes this from each file's
+FWHM column, or uses these values when a file has none. KOSMOS's resolution is taken from the
+arc line widths unless `[fluxcal] resolution` is set; the result depends little on it. The
+fitted offset (standard's lines minus tabulated) is logged and also serves as a check of the
+wavelength calibration. Science spectra are never smoothed. The log reports a closure test: the standard calibrated with its own sensitivity function,
 compared with its tabulated flux.
 
 ## Continuum mask

@@ -220,6 +220,15 @@ class WaveSolution:
     reference: str
     n_rows: int # rows in the frame
     notes: list = field(default_factory=list)
+    sigmas: np.ndarray = None # Gaussian sigma (rows) of the matched arc lines
+
+    @property
+    def line_fwhm(self):
+        """Median FWHM (A) of the arc lines kept by the fit: the resolution for a source filling the slit."""
+        if self.sigmas is None or not self.used.any():
+            return float("nan")
+        disp = np.abs(self.poly.deriv()(self.rows[self.used]))
+        return float(np.median(2.3548 * self.sigmas[self.used] * disp))
 
     @property
     def residuals(self):
@@ -238,7 +247,8 @@ class WaveSolution:
                 f"({self.n_found} arc lines found), order {self.poly.degree()}, "
                 f"RMS {self.rms_ang:.4f} A = {self.rms_kms:.2f} km/s, "
                 f"range {self.poly(0):.1f}-{self.poly(self.n_rows - 1):.1f} A "
-                f"(reference shift {self.shift:+d} rows, stretch {self.stretch:.3f})")
+                f"(reference shift {self.shift:+d} rows, stretch {self.stretch:.3f}), "
+                f"arc line FWHM {self.line_fwhm:.2f} A")
 
     def table(self):
         """Text table of matched lines for checking the identification by eye."""
@@ -292,7 +302,7 @@ def solve(arc_spec, lamps, reference, binning_y, wcfg):
     catalog = catalog_all[(catalog_all > lam_lo - margin) & (catalog_all < lam_hi + margin)]
     catalog = remove_blends(catalog, 2.5 * disp)
 
-    rows, amps, _ = find_arc_lines(arc_spec, nsigma=wcfg["peak_sigma"])
+    rows, amps, sigs = find_arc_lines(arc_spec, nsigma=wcfg["peak_sigma"])
     if len(rows) < wcfg["min_lines"]:
         raise RuntimeError(f"Only {len(rows)} arc lines found (need {wcfg['min_lines']})")
     guess, shift, stretch, _ = initial_guess(rows, amps, catalog, poly0, n_rows,
@@ -302,7 +312,8 @@ def solve(arc_spec, lamps, reference, binning_y, wcfg):
         poly, obs, cat, used = identify_lines(rows, catalog, guess, order, wcfg["match_tol"] * disp,
                                               wcfg["clip_sigma"], wcfg["min_lines"])
         return WaveSolution(poly=poly, rows=rows[obs], lam=catalog[cat], used=used, n_found=len(rows),
-                            shift=shift, stretch=stretch, reference=reference["path"], n_rows=n_rows)
+                            shift=shift, stretch=stretch, reference=reference["path"], n_rows=n_rows,
+                            sigmas=sigs[obs])
 
     if wcfg["order"] != "auto":
         sol = attempt(wcfg["order"])

@@ -108,7 +108,11 @@ DEFAULTS = {
         "mask": "default", # Regions left out of the fit: "default" (calib_data/masks/standard.txt),
                            # "none", or a file with columns center, half-width (A)
         "extra_mask": [], # More regions to leave out: [[lam_min, lam_max], ...]
-        "resolution": 0.0, # FWHM (A) the tabulated flux is smoothed to; 0 = 3 pixels
+        "resolution": 0.0, # KOSMOS resolution (FWHM, A) for comparing the standard with its
+                           # tabulated flux; 0 = the arc line width (the result depends little on it)
+        "fit_offset": True, # Fit and take out a wavelength offset between the standard and its
+                            # tabulated spectrum before comparing them (logged as a wavelength check)
+        "max_offset": 5.0, # A, largest offset searched
         "max_extrapolate": 100.0, # A the sensitivity is extended (linearly, Mask bit 8) past the
                                   # fitted range, e.g. when a masked line sits at the detector edge
     },

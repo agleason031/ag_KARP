@@ -283,7 +283,8 @@ class sci_modules:
         t["Lam"].unit = "Angstrom"
         t.meta.update({"OBJECT": self.objid, "FRAME": scinum, "EXTRACT": self.extract_method,
                        "VHELIO": (v_helio, "km/s, applied to Lam"), "WAVERMS": (sol.rms_kms, "km/s arc fit RMS"),
-                       "FLEXURE": (offset, "A subtracted from the arc solution")})
+                       "FLEXURE": (offset, "A subtracted from the arc solution"),
+                       "ARCFWHM": (sol.line_fwhm, "A, median FWHM of the arc lines")})
         t.write(f"{self.target_dir}OUT/{self.objid}_{scinum}_extracted.fits", format="fits", overwrite=True)
         self.wavelengths_dict[scinum] = wavelengths
     
@@ -508,6 +509,26 @@ class sci_modules:
         header = CCDData.read(self.group.science[self.comb_ref], unit="adu").meta
         return exposure_info(header, self.site_height, self.target_ra, self.target_dec)
 
+    def instrument_resolution(self, fcfg):
+        """
+        KOSMOS resolution (FWHM, A) for comparing a standard with its tabulated flux:
+        fcfg["resolution"] if set, else the median arc line FWHM of this object's frames
+        (from OUT/{objid}_<n>_extracted.fits; an upper limit for a star smaller than the
+        slit), else 3 pixels. Returns (fwhm, where it came from).
+        """
+        if fcfg["resolution"] > 0:
+            return float(fcfg["resolution"]), "[fluxcal] resolution"
+        values = []
+        for n in self.group.science:
+            path = f"{self.target_dir}OUT/{self.objid}_{n}_extracted.fits"
+            if os.path.exists(path):
+                v = Table.read(path).meta.get("ARCFWHM")
+                if v is not None and np.isfinite(v):
+                    values.append(float(v))
+        if values:
+            return float(np.median(values)), "arc line width"
+        return 3 * float(np.median(fluxcal.pixel_width(self.comb_wave))), "3 pixels"
+
     def sensitivity_function(self, std_name, fcfg):
         """
         Sensitivity function from this object's combined spectrum, this object being the
@@ -517,20 +538,28 @@ class sci_modules:
         """
         self.load_combined()
         exptime, airmass, mjd = self.reference_exposure()
-        ref_lam, ref_flux, ref_label = fluxcal.load_standard(fcfg["reference"] or std_name)
+        ref_lam, ref_flux, ref_fwhm, ref_label = fluxcal.load_standard(fcfg["reference"] or std_name)
         ext = fluxcal.load_extinction(fcfg["extinction"])
+        inst_fwhm, source = self.instrument_resolution(fcfg)
         sens = fluxcal.sensitivity(self.comb_wave, self.comb_flux, self.comb_sigma, (self.comb_mask & 2) != 0,
-                                   exptime, airmass, ext, (ref_lam, ref_flux), fcfg)
+                                   exptime, airmass, ext, (ref_lam, ref_flux, ref_fwhm), inst_fwhm, fcfg)
         sens.update(standard=self.objid, reference=ref_label, mjd=mjd, setup=self.group.setup)
+        in_range = (ref_lam >= self.comb_wave.min()) & (ref_lam <= self.comb_wave.max())
         log.info(f"Sensitivity function from {self.objid} ({ref_label}; frame {self.comb_ref}, "
                  f"{exptime:g} s, airmass {airmass:.3f}): " + "; ".join(sens["notes"])
                  + f"; valid {sens['range'][0]:.0f}-{sens['range'][1]:.0f} A")
+        log.info(f"  Compared at matched resolution: KOSMOS {inst_fwhm:.2f} A FWHM ({source}), tabulated "
+                 f"{ref_fwhm[in_range].min():.1f}-{ref_fwhm[in_range].max():.1f} A; the standard's lines are "
+                 f"offset by {sens['offset']:+.2f} A = {sens['offset'] / 5500 * C_KMS:+.0f} km/s at 5500 A from the "
+                 "tabulated spectrum (wavelength calibration check)")
         t = Table([sens["lam"], sens["sens"], sens["fit"], sens["used"].astype(np.int16), sens["ref_flux"]],
                   names=("Lam", "Sens", "SensFit", "Used", "RefFlux"))
         t["Lam"].unit = "Angstrom"
         t["Sens"].unit = t["SensFit"].unit = "mag" # 2.5 log10(e-/s/A per erg/s/cm2/A)
         t["RefFlux"].unit = "erg / (s cm2 Angstrom)"
         t.meta.update({"STANDARD": self.objid, "REFFILE": ref_label, "REFFRAME": self.comb_ref,
+                       "INSTFWHM": (inst_fwhm, "A, KOSMOS resolution assumed"),
+                       "STDOFF": (sens["offset"], "A, standard's lines minus tabulated"),
                        "EXPTIME": exptime, "AIRMASS": (airmass, "mid-exposure"),
                        "EXTINCT": os.path.basename(str(fcfg["extinction"])),
                        "SENSRMS": (sens["rms"], "mag, RMS of the fit"),
