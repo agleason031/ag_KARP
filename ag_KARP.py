@@ -78,7 +78,7 @@ def run_group(cfg, group):
         for scinum in scinums:
             sci_mods.reduce_image(scinum, masterbias, final_flat, verbose)
 
-    # Scale and median-combine the extracted spectra OUT/<objid>_<n>_extracted.fits
+    # Scale and combine the extracted spectra OUT/<objid>_<n>_extracted.fits
     # (read from disk, so this also works on an earlier run's output)
     sci_mods.snr = None
     if steps["combine"]:

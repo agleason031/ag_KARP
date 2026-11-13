@@ -42,7 +42,7 @@ DEFAULTS = {
     },
     "steps": {
         "reduce": True, # Calibrate, trace, extract and wavelength-calibrate each frame
-        "combine": True, # Scale and median-combine the extracted frames
+        "combine": True, # Scale and combine the extracted frames
         "normalize": True, # Continuum-normalize the combined spectrum (optional)
     },
     "detector": {
@@ -88,6 +88,10 @@ DEFAULTS = {
         "scale": "smooth", # Scale frames to the best one: "smooth" (polynomial in wavelength),
                            # "median" (one factor), or "none"
         "scale_order": 2, # Polynomial order for scale = "smooth"
+        "method": "weighted", # "weighted" (inverse-variance mean with outlier rejection),
+                              # "mean" (plain mean) or "median"
+        "reject_sigma": 5.0, # method = "weighted": reject values this many sigma (their own
+                             # error) from the median of the frames; 0 = no rejection
         "jackknife": False, # Also report S/N with each frame left out
     },
     "wavecal": {
@@ -152,6 +156,10 @@ def merge(user):
 
     if cfg["combine"]["scale"] not in ("smooth", "median", "none"):
         raise ConfigError('[combine] scale should be "smooth", "median" or "none"')
+    if cfg["combine"]["method"] not in ("weighted", "mean", "median"):
+        raise ConfigError('[combine] method should be "weighted", "mean" or "median"')
+    if not isinstance(cfg["combine"]["reject_sigma"], (int, float)) or cfg["combine"]["reject_sigma"] < 0:
+        raise ConfigError("[combine] reject_sigma should be a number >= 0 (0 = no rejection)")
     if cfg["extraction"]["method"] not in ("optimal", "boxcar"):
         raise ConfigError('[extraction] method should be "optimal" or "boxcar"')
 

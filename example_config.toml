@@ -35,7 +35,7 @@ site_height = 2788.0   # m; not in the headers (APO)
 
 [steps]
 reduce = true      # calibrate, trace, extract, wavelength-calibrate each frame
-combine = true     # scale and median-combine the extracted frames (can run alone)
+combine = true     # scale and combine the extracted frames (can run alone)
 normalize = true   # optional: continuum-normalize the combined spectrum (can run alone)
 
 [detector]
@@ -77,9 +77,13 @@ extra_mask = []        # more regions to leave out, e.g. [[5500, 5700]]
 clip_regions = []      # e.g. [[5500, 5700, 1.05]] to flag the zeroth order
 
 [combine]
-# Frames are scaled to the one with the best S/N, then median-combined.
+# Frames are scaled to the one with the best S/N, then combined pixel by pixel.
 scale = "smooth"   # "smooth" (polynomial in wavelength), "median" (one factor), or "none"
 scale_order = 2
+method = "weighted"  # "weighted": inverse-variance mean after rejecting outliers (Mask bit 4
+                     #   marks pixels where a frame was rejected); "mean": plain mean; "median"
+reject_sigma = 5.0   # "weighted": reject values this many sigma from the frames' median
+                     #   (only where >= 3 frames have data); 0 = no rejection
 jackknife = false  # also report S/N with each frame left out
 
 [wavecal]

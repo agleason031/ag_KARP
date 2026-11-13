@@ -47,6 +47,8 @@ clip_regions = []
 [combine]
 scale = "smooth"
 scale_order = 2
+method = "weighted"
+reject_sigma = 5.0
 jackknife = false
 
 [wavecal]

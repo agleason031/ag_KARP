@@ -77,6 +77,8 @@ class sci_modules:
         # Combining frames
         self.comb_scale = cfg["combine"]["scale"] # "smooth", "median" or "none"
         self.comb_scale_order = cfg["combine"]["scale_order"]
+        self.comb_method = cfg["combine"]["method"] # "weighted", "mean" or "median"
+        self.comb_reject_sigma = float(cfg["combine"]["reject_sigma"])
         # Heliocentric correction inputs: coordinates from headers unless overridden
         self.target_ra = cfg["target"]["ra"]
         self.target_dec = cfg["target"]["dec"]
@@ -339,8 +341,15 @@ class sci_modules:
         highest S/N (the reference) and scaled to it: by a smooth function of
         wavelength (scale = "smooth", a polynomial of order scale_order fit to the
         flux ratio with clipping), a single factor ("median"), or not at all ("none").
-        The scaled frames are median-combined; the error is that of the inverse-
-        variance mean of the frames used, times the median/mean noise factor.
+        The scaled frames are combined per pixel by comb_method:
+          "weighted": inverse-variance weighted mean, after rejecting values more than
+                      reject_sigma (their own error) from the median of the frames
+                      (only where >= 3 frames have data); exact error 1/sqrt(sum 1/sigma^2).
+                      Mask bit 4 marks pixels where a value was rejected.
+          "mean":     plain mean; error sqrt(sum sigma^2) / n.
+          "median":   median; error that of the inverse-variance mean times the
+                      median/mean noise factor for that many frames.
+        Mask bit 2 marks pixels with no data.
         Flux is in electrons per pixel, on the reference frame's scale.
         Returns the S/N at 5500 A: the median of Flux/Sigma over 5450-5550 A.
         With jackknife=True, also report the S/N with each image left out in turn.
@@ -406,26 +415,55 @@ class sci_modules:
                 f"range {np.nanmin(scale):.4f}-{np.nanmax(scale):.4f}")
 
         def combine(nums):
-            """Median-combine frames `nums` on gwave. Returns (flux, sigma, mask)."""
+            """
+            Combine frames `nums` on gwave with self.comb_method.
+            Returns (flux, sigma, mask, n_rejected per frame).
+            """
             gflux = np.array([on_grid[n][0] for n in nums])
             gsig = np.array([on_grid[n][1] for n in nums])
-            gsig = np.where(np.isfinite(gflux), gsig, np.nan) # errors only where flux is used
-            with warnings.catch_warnings():
+            good = np.isfinite(gflux) & np.isfinite(gsig) & (gsig > 0)
+            gflux = np.where(good, gflux, np.nan)
+            gsig = np.where(good, gsig, np.nan)
+            n_used = good.sum(axis=0)
+            n_rej = np.zeros(len(nums), dtype=int)
+            mask = np.zeros(len(gwave), dtype=np.int16)
+            with warnings.catch_warnings(), np.errstate(divide="ignore", invalid="ignore"):
                 warnings.simplefilter("ignore", RuntimeWarning) # All-NaN columns are flagged below
                 med = np.nanmedian(gflux, axis=0)
-            # Error: that of the inverse-variance mean of the frames used, times how much
-            # noisier a median of that many values is than a mean
-            n_used = np.sum(np.isfinite(gflux) & (gsig > 0), axis=0)
-            inv_var = np.where(gsig > 0, 1.0 / gsig**2, 0.0)
-            with np.errstate(divide="ignore"):
-                sig = np.sqrt(1.0 / np.sum(inv_var, axis=0)) * median_error_factor(n_used)
-            mask = np.zeros(len(gwave), dtype=np.int16)
-            mask[np.isnan(med) | ~np.isfinite(sig)] |= 2 # 2 = no data
-            return med, sig, mask
+                if self.comb_method == "median":
+                    # Error: that of the inverse-variance mean of the frames used, times how
+                    # much noisier a median of that many values is than a mean
+                    inv_var = np.where(good, 1.0 / gsig**2, 0.0)
+                    flux = med
+                    sig = np.sqrt(1.0 / np.sum(inv_var, axis=0)) * median_error_factor(n_used)
+                elif self.comb_method == "mean":
+                    # Plain average of the frames used; exact error propagation
+                    flux = np.nanmean(gflux, axis=0)
+                    sig = np.sqrt(np.nansum(gsig**2, axis=0)) / n_used
+                else: # weighted
+                    # Reject values more than reject_sigma (their own error) from the median,
+                    # where >= 3 frames have data (with 2, an outlier drags the median halfway
+                    # and both would go). Never reject every value at a pixel.
+                    use = good.copy()
+                    if self.comb_reject_sigma > 0: # 0 = no rejection
+                        dev = np.abs(gflux - med) / gsig
+                        reject = good & (dev > self.comb_reject_sigma) & (n_used >= 3)
+                        reject &= ~np.all(reject | ~good, axis=0) # keep a pixel's values if all would go
+                        use &= ~reject
+                        n_rej = reject.sum(axis=1)
+                        mask[reject.any(axis=0)] |= 4 # 4 = a frame was rejected here (informational)
+                    inv_var = np.where(use, 1.0 / gsig**2, 0.0)
+                    wsum = np.sum(inv_var, axis=0)
+                    flux = np.sum(np.where(use, gflux, 0.0) * inv_var, axis=0) / wsum
+                    sig = np.sqrt(1.0 / wsum)
+            no_data = (n_used == 0) | ~np.isfinite(flux) | ~np.isfinite(sig)
+            flux = np.where(no_data, np.nan, flux)
+            mask[no_data] |= 2 # 2 = no data
+            return flux, sig, mask, n_rej
 
         def snr_in(flux, sig, mask, lam_min, lam_max):
-            """Median Flux/Sigma of unmasked pixels in a wavelength range (NaN if none)."""
-            m = (gwave >= lam_min) & (gwave <= lam_max) & (mask == 0)
+            """Median Flux/Sigma of pixels with data in a wavelength range (NaN if none)."""
+            m = (gwave >= lam_min) & (gwave <= lam_max) & ((mask & 2) == 0)
             return float(np.median(flux[m] / sig[m])) if m.any() else np.nan
 
         nums = list(frames)
@@ -433,11 +471,18 @@ class sci_modules:
             # Leave out each frame in turn and report the S/N, for comparison only
             for leave in nums:
                 rest = [n for n in nums if n != leave]
-                f_i, s_i, m_i = combine(rest)
+                f_i, s_i, m_i, _ = combine(rest)
                 log(f"S/N at 5500 A: {snr_in(f_i, s_i, m_i, 5450, 5550):.1f} without frame {leave}")
 
         # The combined spectrum always uses all frames
-        comb_flux, comb_sig, comb_mask = combine(nums)
+        comb_flux, comb_sig, comb_mask, n_rej = combine(nums)
+        method_desc = {"median": "median", "mean": "plain mean",
+                       "weighted": "inverse-variance weighted mean, " +
+                                   (f"{self.comb_reject_sigma:g} sigma rejection" if self.comb_reject_sigma > 0
+                                    else "no rejection")}
+        log(f"Combined {len(nums)} frames: {method_desc[self.comb_method]}")
+        if self.comb_method == "weighted":
+            log("Pixels rejected per frame: " + ", ".join(f"{n}: {r}" for n, r in zip(nums, n_rej)))
 
         # S/N per pixel from the propagated errors, around several wavelengths
         snr5500 = snr_in(comb_flux, comb_sig, comb_mask, 5450, 5550)
@@ -455,6 +500,10 @@ class sci_modules:
         t.meta["SCINUMS"] = ",".join(str(n) for n in scinums)
         t.meta["REFFRAME"] = (ref, "frames scaled to this one")
         t.meta["SCALE"] = (self.comb_scale, "frame scaling method")
+        t.meta["COMBINE"] = (self.comb_method, "frame combination method")
+        if self.comb_method == "weighted":
+            t.meta["REJSIG"] = (self.comb_reject_sigma, "rejection threshold, sigma")
+            t.meta["NREJECT"] = (int(np.sum(n_rej)), "frame pixels rejected")
         t.meta["SNR5500"] = (snr5500, "median Flux/Sigma, 5450-5550 A")
         t.write(out_path, format="fits", overwrite=True)
         print("Combined spectrum written to", out_path)
@@ -489,7 +538,7 @@ class sci_modules:
         regions = load_mask(self.norm_mask)
         if len(self.norm_extra_mask):
             regions = np.vstack([regions, np.array(self.norm_extra_mask, dtype=float).reshape(-1, 2)])
-        cont, used, notes = fit_continuum(lam, flux, sig, mask != 0, regions,
+        cont, used, notes = fit_continuum(lam, flux, sig, (mask & 2) != 0, regions, # bit 4 is informational
                                           knot_spacing=self.knot_spacing, low_reject=self.low_reject,
                                           high_reject=self.high_reject)
         norm_flux = flux / cont
