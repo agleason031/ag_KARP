@@ -1,10 +1,14 @@
 {
-  "created": "2026-11-13T03:40:35",
+  "created": "2026-11-13T04:02:14",
   "git": {
-    "commit": "3cd2691",
+    "commit": "ef0fd34",
     "dirty": false
   },
-  "note": "Overscan/trim/gain, fixed flat combine, CR cleaning on",
-  "snr": 130.0973656379763,
-  "v_helio": -4.245913955051133
+  "note": "TOML config, discovery, per-frame heliocentric correction",
+  "snr": 130.14871755077664,
+  "v_helio": {
+    "61": -4.147310855097247,
+    "62": -4.160835890814477,
+    "63": -4.174304242930482
+  }
 }
