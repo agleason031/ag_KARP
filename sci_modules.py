@@ -82,9 +82,7 @@ class sci_modules:
         self.target_dec = cfg["target"]["dec"]
         self.site_height = cfg["target"]["site_height"]
         self.comb_flux = None # combined spectrum (set by combine_spectra)
-        self.gwave = [] # normalized combined spectrum (set by normalize_combined)
-        self.med_comb = []
-        self.sig_final = []
+        self.continuum = None # normalized combined spectrum (set by normalize_combined)
         
         self.grapher = grapher
         
@@ -521,10 +519,10 @@ class sci_modules:
         self.grapher.plot_continuum(lam, flux, cont, used, regions)
         self.grapher.plot_normalized(lam, norm_flux, norm_sig)
 
-        # Normalized spectrum for the line fits (fit_lines)
-        self.gwave = lam
-        self.med_comb = norm_flux
-        self.sig_final = norm_sig
+        # Normalized combined spectrum
+        self.norm_wave = lam
+        self.norm_flux = norm_flux
+        self.norm_sigma = norm_sig
         self.norm_mask_out = mask
         self.continuum = cont
         self.cont_used = used

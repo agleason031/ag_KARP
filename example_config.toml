@@ -37,7 +37,6 @@ site_height = 2788.0   # m; not in the headers (APO)
 reduce = true      # calibrate, trace, extract, wavelength-calibrate each frame
 combine = true     # scale and median-combine the extracted frames (can run alone)
 normalize = true   # optional: continuum-normalize the combined spectrum (can run alone)
-fit_lines = false  # velocity and metal-line fits on the combined spectrum
 
 [detector]
 # KOSMOS at 2x1 binning. Column ranges are 0-based and end-exclusive, one per amplifier.
@@ -82,10 +81,6 @@ clip_regions = []      # e.g. [[5500, 5700, 1.05]] to flag the zeroth order
 scale = "smooth"   # "smooth" (polynomial in wavelength), "median" (one factor), or "none"
 scale_order = 2
 jackknife = false  # also report S/N with each frame left out
-
-[lines]
-# Half-widths (A) of the 16 metal-line windows used by fit_lines
-metal_mask = [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
 
 [wavecal]
 # Arc lines are found and identified automatically, starting from a rough solution

@@ -87,10 +87,6 @@ def run_group(cfg, group):
     # Optional: continuum-normalize the combined spectrum (OUT/<objid>_combined.fits)
     if steps["normalize"]:
         sci_mods.normalize_combined(verbose)
-
-    if steps["fit_lines"]:
-        radial_vel = sci_tools.fit_vel_lines(sci_mods.gwave, sci_mods.med_comb, graph)
-        sci_tools.fit_metal_lines(sci_mods.gwave, sci_mods.med_comb, sci_mods.sig_final, cfg["lines"]["metal_mask"], radial_vel, graph)
     return sci_mods
 
 def main(argv=None, overrides=None):

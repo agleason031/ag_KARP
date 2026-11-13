@@ -78,7 +78,6 @@ def block_mean(img, by=64, bx=16):
 
 def snapshot(sm, out_dir):
     """Collect the arrays worth tracking from a finished run."""
-    from astropy.table import Table
     import sci_tools
 
     snap = {}
@@ -113,9 +112,9 @@ def snapshot(sm, out_dir):
         snap["comb_mask"] = np.asarray(sm.comb_mask)
     # Normalized combined spectrum (optional step)
     if getattr(sm, "continuum", None) is not None:
-        snap["norm_lam"] = np.asarray(sm.gwave)
-        snap["norm_flux"] = np.asarray(sm.med_comb)
-        snap["norm_sigma"] = np.asarray(sm.sig_final)
+        snap["norm_lam"] = np.asarray(sm.norm_wave)
+        snap["norm_flux"] = np.asarray(sm.norm_flux)
+        snap["norm_sigma"] = np.asarray(sm.norm_sigma)
         snap["norm_continuum"] = np.asarray(sm.continuum)
         snap["norm_contfit"] = np.asarray(sm.cont_used, dtype=np.int16)
         snap["norm_mask"] = np.asarray(sm.norm_mask_out)

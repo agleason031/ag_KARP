@@ -11,7 +11,6 @@ output_dir = "tests/regression/runs/unset"
 reduce = true
 combine = true
 normalize = true
-fit_lines = false
 
 [detector]
 amp_data = [[0, 512], [512, 1024]]

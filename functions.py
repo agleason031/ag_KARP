@@ -8,7 +8,6 @@ Created on Mon Jun  2 15:13:39 2025
 from scipy.optimize import least_squares
 from numba import njit
 import numpy as np
-import math
 
 # Define a Gaussian
 @njit

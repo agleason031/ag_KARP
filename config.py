@@ -44,7 +44,6 @@ DEFAULTS = {
         "reduce": True, # Calibrate, trace, extract and wavelength-calibrate each frame
         "combine": True, # Scale and median-combine the extracted frames
         "normalize": True, # Continuum-normalize the combined spectrum (optional)
-        "fit_lines": False, # Velocity and metal-line fits on the combined spectrum
     },
     "detector": {
         # KOSMOS at 2x1 binning: two amplifiers split at column 512. Column ranges are
@@ -90,9 +89,6 @@ DEFAULTS = {
                            # "median" (one factor), or "none"
         "scale_order": 2, # Polynomial order for scale = "smooth"
         "jackknife": False, # Also report S/N with each frame left out
-    },
-    "lines": {
-        "metal_mask": [2.0] * 16, # Half-widths (A) of the 16 metal-line windows for fit_lines
     },
     "wavecal": {
         "order": "auto", # Polynomial order, or "auto": the order (2-6) that best predicts each
@@ -156,8 +152,6 @@ def merge(user):
 
     if cfg["combine"]["scale"] not in ("smooth", "median", "none"):
         raise ConfigError('[combine] scale should be "smooth", "median" or "none"')
-    if cfg["steps"]["fit_lines"] and not cfg["steps"]["normalize"]:
-        raise ConfigError("[steps] fit_lines works on the normalized spectrum: set normalize = true")
     if cfg["extraction"]["method"] not in ("optimal", "boxcar"):
         raise ConfigError('[extraction] method should be "optimal" or "boxcar"')
 
@@ -170,8 +164,6 @@ def merge(user):
     det = cfg["detector"]
     if not (len(det["amp_data"]) == len(det["amp_overscan"]) == len(det["gain"])):
         raise ConfigError("[detector] amp_data, amp_overscan and gain need one entry per amplifier")
-    if len(cfg["lines"]["metal_mask"]) != 16:
-        raise ConfigError("[lines] metal_mask needs 16 values (one per metal line)")
     return cfg
 
 
