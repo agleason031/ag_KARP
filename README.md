@@ -1,0 +1,140 @@
+# KARP — KOSMOS Astronomical Reduction Pipeline
+
+KARP reduces long-slit spectra from KOSMOS on the APO 3.5 m. Starting from a night of
+raw frames, it produces a wavelength-calibrated 1D spectrum for each object, with
+propagated errors. You can also have it continuum-normalize the spectrum.
+
+```
+raw frames ─► sort by header ─► overscan, bias, flat ─► cosmic rays ─► trace
+          ─► extraction (optimal or boxcar) ─► wavelength calibration (arc + sky check)
+          ─► per-frame spectra ─► scale + combine ─► [optional] continuum normalization
+```
+
+## Installation
+
+```bash
+git clone git@github.com:agleason031/ag_KARP.git
+cd ag_KARP
+conda env create -f environment.yml   # creates the "ag_karp" environment
+conda activate ag_karp
+pip install -e .                     # optional: adds a `karp` command
+```
+
+Requires Python ≥ 3.11. `pygame` is only needed if you turn on `[output] sound`.
+
+## Quick start
+
+1. Copy [example_config.toml](example_config.toml) and set `[paths] raw_dir` (the folder
+   of raw `k.NNNN.fits` frames) and `output_dir`. Every other setting has a default.
+2. Check which frames KARP will use:
+   ```bash
+   python ag_KARP.py my_night.toml --list
+   ```
+3. Reduce:
+   ```bash
+   python ag_KARP.py my_night.toml        # or: karp my_night.toml
+   ```
+
+KARP sorts frames by their headers (IMAGETYP, OBJNAME, DISPERSR, SLIT, binning and the lamp
+keywords). Each object and setup becomes one group, with matching biases, flats and the
+nearest argon arc. The frame lists in `[frames]` can narrow or override that. Each group is
+written to `output_dir/<OBJNAME>/`.
+
+## What each step does
+
+| Step | Details |
+|---|---|
+| Calibration | Each amplifier's overscan is fit along the rows and subtracted, then the frame is trimmed and converted to electrons with that amplifier's gain. The master bias is a clipped median. The flats are bias-subtracted, scaled by their medians and median-combined; dividing by a 5×5 smoothed copy gives the pixel-to-pixel flat. The flat is set to 1 in the rows crossed by the grating's zeroth order, which are found automatically (`[flat]`). Master calibrations are cached in `OUT/` and rebuilt when the input frames or settings change. |
+| Cosmic rays | L.A.Cosmic on each 2D frame (`[cosmic_rays]`). |
+| Trace | Coarse peak tracking, Gaussian fits per row, then a clipped polynomial (`[trace]`). |
+| Extraction | Sky fit per row across both background windows. Optimal extraction (Horne 1986) uses a smoothed data-derived profile and outlier rejection; boxcar is also available. Errors come from a per-pixel variance image (Poisson + read noise, through the flat). See `[extraction]`. |
+| Wavelength calibration | The arc is extracted along each frame's trace and its lines are found and centroided. They are identified against NIST line lists starting from a stored reference solution, then fit with a clipped polynomial (order chosen automatically by default). Night-sky lines are measured to check flexure, which can be reported or corrected. A heliocentric correction is applied to each frame from its header. See `[wavecal]`. |
+| Combine | Frames are interpolated onto the best frame's wavelength grid and scaled to it with a smooth function of wavelength. The default combination is an inverse-variance weighted mean with outlier rejection based on the errors; plain mean and median are also available. See `[combine]`. |
+| Normalization (optional) | A cubic spline continuum with asymmetric sigma clipping and a line mask (`[normalization]`). It isn't required for a valid reduction; turn it off with `[steps] normalize = false`. |
+
+The steps in `[steps]` can be run separately. For example, `reduce = false` re-combines or
+re-normalizes earlier output without redoing the extraction.
+
+## Output
+
+In `output_dir/<OBJNAME>/OUT/`:
+
+| File | Contents |
+|---|---|
+| `<obj>_<n>_extracted.fits` | Spectrum of frame *n*: `Lam` (Å, air, heliocentric), `Flux`, `Sigma`, `Sky` (e⁻ per pixel), `Row` (detector row). The header holds the extraction method, heliocentric velocity, arc-fit RMS and flexure offset. |
+| `<obj>_combined.fits` | Combined spectrum: `Lam`, `Flux`, `Sigma`, `Mask`. The flux is in electrons on the reference frame's scale. The header holds the frames used, combine method and S/N at 5500 Å. |
+| `<obj>_normalized.fits` | Only when normalization is on: `Flux` and `Sigma` divided by the continuum, plus `Continuum`, `Mask`, and `ContFit` (1 = pixel used in the continuum fit). |
+| `<obj>_wavecal_<n>.txt` | The matched arc lines and the solution, for checking by eye. |
+| `<obj>_master_bias.fits`, `<obj>_final_flat.fits` | Cached master calibrations. |
+| `KARP_log.txt` | Full log of the run, rewritten each run. |
+| `KARP_run_info.txt` | The frames and every setting used. |
+| `*.png` | Diagnostic plots. `[output] verbose = true` adds many more, in `ImageNumber_<n>/` too. |
+
+**Mask bits** (a pixel can carry several):
+
+| Bit | Meaning |
+|---|---|
+| 1 | Normalized flux above the `[normalization]` clip thresholds (flagged only; values unchanged) |
+| 2 | No data |
+| 4 | At least one frame was rejected as an outlier at this pixel during the weighted combine (informational) |
+
+S/N is the median `Flux/Sigma` per pixel and is reported in the log at 5500 Å and in 100 Å
+bands.
+
+## Configuration
+
+[example_config.toml](example_config.toml) lists every setting with its default and a short
+explanation. Only `[paths]` is required. Unknown settings or values of the wrong type stop KARP
+with an error before anything runs.
+
+Detector defaults (`[detector]`) describe KOSMOS at 2×1 binning: two amplifiers, a gain of
+0.6 e⁻/DN from the spec sheet, and 5.7 e⁻ read noise. The flats suggest the gain may be closer
+to 0.72–0.77 e⁻/DN; check this for your data.
+
+## Wavelength calibration data
+
+- `calib_data/linelists/`: Ar I, Ne I and Kr I air wavelengths and intensities from the NIST
+  Atomic Spectra Database.
+- `calib_data/wavecal/kosmos_<disperser>.json`: a rough reference solution for each grating,
+  used as the starting point for line identification. Only `kosmos_blue.json` (blue grating)
+  exists so far.
+
+To add a reference for another grating or binning, start from a matched-line table, such as
+a KARP `OUT/<obj>_wavecal_<n>.txt` or a hand-identified table with columns
+`row, wavelength, -, -, -, used`, and run:
+
+```bash
+python wavecal.py make-reference OUT/OBJ_wavecal_61.txt --disperser red --binning-y 1 \
+    --order 5 --lamps ARGON -o calib_data/wavecal/kosmos_red.json
+```
+
+## Continuum mask
+
+`calib_data/masks/stellar.txt` lists the regions left out of the continuum fit by default:
+Balmer lines, Ca II H & K, Na D and the telluric O₂ bands. The columns are center and
+half-width in Å. Stars with broad Balmer wings may need wider regions, which you can supply
+through `mask` or `extra_mask`.
+
+## Regression tests
+
+`tests/regression/regress.py` runs the whole pipeline on a reference data set and compares
+every intermediate and final array with a saved snapshot:
+
+```bash
+python tests/regression/regress.py compare                 # against tests/regression/reference/
+python tests/regression/regress.py compare --set combine.method='"median"'
+python tests/regression/regress.py make-reference --note "why the output changed"
+```
+
+The raw test frames are expected in `test_data/in/`, which isn't tracked by git. Runs are
+written to `tests/regression/runs/`.
+
+## Known limitations
+
+- Only the blue grating at 1-row binning along the dispersion has a reference wavelength
+  solution.
+- The Ne and Kr line-list intensity cutoffs haven't been tested on real arcs.
+- On the test data, the [O I] 5577 Å sky line sits about 0.4 Å off the arc solution while
+  6300 and 6364 Å agree, so flexure correction defaults to report-only.
+- The detector defaults assume 2×1 binning. Other binnings need their own `[detector]`
+  column ranges.

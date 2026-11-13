@@ -55,6 +55,14 @@ DEFAULTS = {
         "full_well": 150000.0, # e-
         "overscan_order": 3, # Chebyshev order of the overscan fit along rows
     },
+    "flat": {
+        # The zeroth order of the grating crosses the slit as a bright band in the flat-lamp
+        # exposures; the final flat is set to 1 in those rows (over the illuminated columns).
+        "zeroth_order": "auto", # "auto" (find bright bands in the flat), "none", or
+                                # [[row_min, row_max], ...] (inclusive, trimmed-frame rows)
+        "zeroth_threshold": 0.02, # "auto": rows this much (fraction) above the running median
+        "zeroth_pad": 10, # "auto": rows added on each side of a band
+    },
     "trace": {
         "order": 3, # Polynomial order of the trace fit
         "col": None, # Starting column for the trace search (default: brightest column)
@@ -121,7 +129,7 @@ class ConfigError(ValueError):
 
 def _check_type(section, key, value, default):
     """Values must match the type of their default (ints are accepted for floats)."""
-    if default is None or default is REQUIRED or (section, key) == ("wavecal", "order"):
+    if default is None or default is REQUIRED or (section, key) in (("wavecal", "order"), ("flat", "zeroth_order")):
         return value # checked in merge()
     if isinstance(default, bool):
         ok = isinstance(value, bool)
@@ -168,6 +176,11 @@ def merge(user):
         raise ConfigError('[wavecal] order should be "auto" or a positive integer')
     if wc["flexure"] not in ("off", "report", "correct"):
         raise ConfigError('[wavecal] flexure should be "off", "report" or "correct"')
+
+    zo = cfg["flat"]["zeroth_order"]
+    if not (zo in ("auto", "none") or (isinstance(zo, list) and all(
+            isinstance(r, list) and len(r) == 2 and all(isinstance(v, int) for v in r) for r in zo))):
+        raise ConfigError('[flat] zeroth_order should be "auto", "none" or [[row_min, row_max], ...]')
 
     det = cfg["detector"]
     if not (len(det["amp_data"]) == len(det["amp_overscan"]) == len(det["gain"])):

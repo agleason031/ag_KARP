@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ag-karp"
+version = "0.1.0"
+description = "KARP: KOSMOS Astronomical Reduction Pipeline for long-slit spectra from KOSMOS (APO 3.5 m)"
+readme = "README.md"
+requires-python = ">=3.11"  # tomllib
+authors = [{ name = "Chase L. Smith" }, { name = "Max Moe" }, { name = "Alex Gleason" }]
+dependencies = [
+    "numpy",
+    "scipy",
+    "astropy",
+    "ccdproc",
+    "numba",
+    "joblib",
+    "tqdm",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+sound = ["pygame"]  # [output] sound = true
+test = ["pytest"]
+
+[project.scripts]
+karp = "ag_KARP:main"
+
+# KARP is a set of top-level modules that find calib_data/ next to themselves, so
+# install it in editable mode (pip install -e .) from a clone of the repository.
+[tool.setuptools]
+py-modules = ["ag_KARP", "config", "discover", "extract", "functions", "grapher",
+              "normalize", "sci_modules", "sci_tools", "wavecal"]

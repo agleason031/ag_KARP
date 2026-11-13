@@ -47,6 +47,13 @@ readnoise = 5.7         # e-
 full_well = 150000.0    # e-
 overscan_order = 3
 
+[flat]
+# The grating's zeroth order crosses the slit as a bright band in the flat-lamp frames;
+# the final flat is set to 1 in those rows so the band doesn't print into the science frames.
+zeroth_order = "auto"    # "auto", "none", or [[row_min, row_max], ...] (inclusive)
+zeroth_threshold = 0.02  # "auto": bands at least this much (fraction) above the running median
+zeroth_pad = 10          # "auto": rows added on each side of a band
+
 [trace]
 order = 3      # polynomial order of the trace
 # col = 480    # starting column for the trace search (default: brightest column)

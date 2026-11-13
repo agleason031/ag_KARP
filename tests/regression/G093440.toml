@@ -20,6 +20,11 @@ readnoise = 5.7
 full_well = 150000
 overscan_order = 3
 
+[flat]
+zeroth_order = "auto"
+zeroth_threshold = 0.02
+zeroth_pad = 10
+
 [trace]
 order = 3
 

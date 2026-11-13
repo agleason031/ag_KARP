@@ -19,6 +19,7 @@ from normalize import fit_continuum, load_mask
 from sci_tools import heliocentric_correction, detector_geometry, read_reduced
 from joblib import Parallel, delayed
 import ccdproc
+import logging
 import os
 import warnings
 import numpy as np
@@ -37,6 +38,8 @@ def median_error_factor(n):
     return np.where(n < len(_MEDIAN_ERROR_FACTOR),
                     _MEDIAN_ERROR_FACTOR[np.minimum(n, len(_MEDIAN_ERROR_FACTOR) - 1)],
                     np.sqrt(np.pi / 2))
+
+log = logging.getLogger("karp")
 
 #-------------------------
 
@@ -122,12 +125,7 @@ class sci_modules:
         # Initalize directory for reduction plots for this science image
         os.makedirs(self.target_dir+"ImageNumber_"+str(scinum), exist_ok=True) # Initializes a directory for E20 files            
         
-        print("KARP is reducing Science Image number:",scinum, flush=True)
-        with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-            f.write("KARP Output Log\n")
-            f.write("- - - ><(((º>\n")
-            f.write("\n")
-            f.write("KARP is reducing Science Image number:"+str(scinum)+"\n")
+        log.info(f"KARP is reducing science image {scinum} ({os.path.basename(sci_location)})")
         
         #creates sci_final_1 if not already created
         if scinum in self.sci_final_dict:
@@ -146,10 +144,7 @@ class sci_modules:
                 sci_final_1, cr_mask = ccdproc.cosmicray_lacosmic(
                     sci_final_1, sigclip=self.cr_sigclip, gain=1.0, readnoise=self.readnoise,
                     satlevel=self.full_well, verbose=False)
-                msg = f"Cosmic rays: {int(cr_mask.sum())} pixels cleaned in image {scinum}"
-                print(msg)
-                with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                    f.write(msg + "\n")
+                log.info(f"Cosmic rays: {int(cr_mask.sum())} pixels cleaned in image {scinum}")
             self.sci_final_dict[scinum] = sci_final_1
 
             # Plot and write to disk only when first created; a cached image was already written
@@ -175,11 +170,10 @@ class sci_modules:
             self.cen_line_dict[scinum] = cen_line.copy() #save center trace (whole pixels)
             self.trace_dict[scinum] = trace.copy() #sub-pixel trace used for extraction
             if (verbose == True):
-                print("Plotting Gauss cen values and Gauss sig values vs Y pix")
                 self.grapher.gauss_cen_plots(trace_fits, cen_line, scinum)
     #----------------------------------
     #flux extraction
-        print(f"Extracting flux ({self.extract_method})...")
+        log.debug(f"Extracting flux ({self.extract_method})")
         n_rows = sci_final_1.shape[0]
         res = extract(sci_final_1, self.var_dict[scinum], final_flat, trace, self.appw, self.buffw, self.bckw,
                       self.readnoise, method=self.extract_method, sky_order=self.sky_order,
@@ -191,9 +185,7 @@ class sci_modules:
         msg = (f"Extraction ({self.extract_method}): median S/N per row {np.nanmedian(flux_raw1 / np.sqrt(var_raw1)):.1f}, "
                f"median sky under aperture {np.nanmedian(sky_raw1):.0f} e-, "
                f"{int(np.isnan(flux_raw1).sum())} rows not extracted, {int(res['n_rejected'].sum())} pixels rejected")
-        print(msg)
-        with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-            f.write(msg + "\n")
+        log.info(msg)
         
         if (verbose == True):
             self.grapher.plot_raw_flux(flux_raw1, scinum)
@@ -202,12 +194,13 @@ class sci_modules:
     #--------------------------------------
     #wavelength calibration
         
-        # Drop rows with failed or non-positive extractions, but remember the
-        # detector row of every kept pixel so the wavelength solution is
-        # evaluated at the right place (NaN > 0 is False, so failed rows drop too)
+        # Drop rows where the extraction failed (no usable pixels), but remember the
+        # detector row of every kept pixel so the wavelength solution is evaluated at
+        # the right place. Zero or negative flux is a valid measurement of a faint
+        # source and is kept (dropping it would bias faint spectra high).
         n_rows = len(flux_raw1)
         flux_raw1 = np.array(flux_raw1)
-        ii = (flux_raw1 > 0) & np.isfinite(var_raw1)
+        ii = np.isfinite(flux_raw1) & np.isfinite(var_raw1) & (var_raw1 > 0)
         y_pix = np.arange(n_rows)[ii] # Detector row of each kept pixel
         flux_raw_cor1 = flux_raw1[ii]
         sky_raw1 = sky_raw1[ii]
@@ -237,9 +230,7 @@ class sci_modules:
                     msg += " (corrected)"
             else:
                 msg = "Flexure check: no night-sky lines detected"
-            print(msg)
-            with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                f.write(msg + "\n")
+            log.info(msg)
 
         # Wavelength of each kept pixel, with the flexure offset and this exposure's heliocentric correction
         def lam_at(y, fit, v_helio):
@@ -254,8 +245,8 @@ class sci_modules:
         self.grapher.lam_cal_res(res_rows, del_lam, scinum)
         self.grapher.lam_cal_res_vel(res_rows, res_vel, scinum)
 
+        log.debug(f"Heliocentric correction for image {scinum}: {v_helio:+.3f} km/s")
         if (verbose == True):
-            print("v_helio:",v_helio,"km/s")
             self.grapher.plot_sci_lamcal(lam_at, y_pix, flux_raw_cor1, poly, v_helio, scinum)
             rnErr = err_raw1 # Extraction error per pixel
             self.grapher.plot_sci_lamcal_res(lam_at, y_pix, flux_raw_cor1, rnErr, poly, v_helio, scinum)
@@ -264,13 +255,7 @@ class sci_modules:
             lam_out_max = lam_at(0, poly, v_helio) # Wavelength at the first row
             lam_out_min = lam_at(n_rows - 1, poly, v_helio) # Wavelength at the last row
             dispersion = (lam_out_max-lam_out_min)/n_rows
-            print("lam_out_max:",lam_out_max)
-            print("lam_out_min:",lam_out_min)
-            print("Dispersion: ",dispersion, " Angstroms/pix")
-            with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                f.write("lam_out_max:"+str(lam_out_max)+"\n")
-                f.write("lam_out_min:"+str(lam_out_min)+"\n")
-                f.write("Dispersion:"+str(dispersion)+"Angstroms/pix\n")
+            log.debug(f"Wavelength range {lam_out_min:.2f}-{lam_out_max:.2f} A, mean dispersion {dispersion:.4f} A/pix")
             
         if (verbose == True):
             # Store flux_raw_cor1
@@ -311,22 +296,18 @@ class sci_modules:
         """
         if scinum in self.wave_solutions:
             return self.wave_solutions[scinum]
-        print("Wavelength calibration...")
+        log.debug("Wavelength calibration")
         arc_spec = wavecal.extract_arc(self.argon, cen_line, self.appw)
         sol = wavecal.solve(arc_spec, self.arc_lamps, self.wave_reference, self.binning_y, self.wcfg)
-        print(sol.summary())
-        with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-            f.write(sol.summary() + "\n")
-            for note in sol.notes:
-                f.write("  " + note + "\n")
+        log.info(sol.summary())
+        for note in sol.notes:
+            log.debug("  " + note)
         with open(f"{self.target_dir}OUT/{self.objid}_wavecal_{scinum}.txt", "w") as f:
             f.write(f"# {sol.summary()}\n")
             f.write(f"# arc {self.group.arc}, lamps {', '.join(self.arc_lamps)}, reference {sol.reference}\n")
             for note in sol.notes:
                 f.write(f"# {note}\n")
             f.write(sol.table())
-        if verbose:
-            print("\n".join(sol.notes))
         self.wave_solutions[scinum] = sol
         return sol
 
@@ -354,14 +335,7 @@ class sci_modules:
         Returns the S/N at 5500 A: the median of Flux/Sigma over 5450-5550 A.
         With jackknife=True, also report the S/N with each image left out in turn.
         """
-        print("KARP is combining spectra")
-        log_path = self.target_dir+"OUT/KARP_OUT_log.txt"
-        def log(msg):
-            print(msg)
-            with open(log_path, "a") as fo:
-                fo.write(msg + "\n")
-        with open(log_path, "w") as fo:
-            fo.write("KARP is combining spectra\n")
+        log.info("KARP is combining spectra")
 
         # Only this object's spectra for the requested images
         file_names = {n: f"{self.target_dir}OUT/{self.objid}_{n}_extracted.fits" for n in scinums}
@@ -373,14 +347,13 @@ class sci_modules:
             t = Table.read(fname)
             frames[n] = (np.asarray(t["Lam"], dtype=float), np.asarray(t["Flux"], dtype=float),
                          np.asarray(t["Sigma"], dtype=float))
-        if (verbose == True):
-            log("Using these file names: " + str(list(file_names.values())))
+        log.debug("Using these files: " + ", ".join(file_names.values()))
 
         # Reference: the frame with the highest median S/N; its wavelength grid is used
         frame_snr = {n: float(np.nanmedian(f / s)) for n, (_, f, s) in frames.items()}
         ref = max(frame_snr, key=frame_snr.get)
         gwave = frames[ref][0]
-        log("Frame S/N per pixel (median): " + ", ".join(f"{n}: {v:.1f}" for n, v in frame_snr.items())
+        log.info("Frame S/N per pixel (median): " + ", ".join(f"{n}: {v:.1f}" for n, v in frame_snr.items())
             + f"; reference frame {ref}")
 
         # Interpolate every frame onto the grid
@@ -411,7 +384,7 @@ class sci_modules:
                     use = new_use
                 scale = np.polyval(coef, x)
             on_grid[n] = (fi * scale, si * scale)
-            log(f"Frame {n} scaled to frame {ref}: factor {np.nanmedian(scale):.4f} (median), "
+            log.info(f"Frame {n} scaled to frame {ref}: factor {np.nanmedian(scale):.4f} (median), "
                 f"range {np.nanmin(scale):.4f}-{np.nanmax(scale):.4f}")
 
         def combine(nums):
@@ -472,7 +445,7 @@ class sci_modules:
             for leave in nums:
                 rest = [n for n in nums if n != leave]
                 f_i, s_i, m_i, _ = combine(rest)
-                log(f"S/N at 5500 A: {snr_in(f_i, s_i, m_i, 5450, 5550):.1f} without frame {leave}")
+                log.info(f"S/N at 5500 A: {snr_in(f_i, s_i, m_i, 5450, 5550):.1f} without frame {leave}")
 
         # The combined spectrum always uses all frames
         comb_flux, comb_sig, comb_mask, n_rej = combine(nums)
@@ -480,17 +453,17 @@ class sci_modules:
                        "weighted": "inverse-variance weighted mean, " +
                                    (f"{self.comb_reject_sigma:g} sigma rejection" if self.comb_reject_sigma > 0
                                     else "no rejection")}
-        log(f"Combined {len(nums)} frames: {method_desc[self.comb_method]}")
+        log.info(f"Combined {len(nums)} frames: {method_desc[self.comb_method]}")
         if self.comb_method == "weighted":
-            log("Pixels rejected per frame: " + ", ".join(f"{n}: {r}" for n, r in zip(nums, n_rej)))
+            log.info("Pixels rejected per frame: " + ", ".join(f"{n}: {r}" for n, r in zip(nums, n_rej)))
 
         # S/N per pixel from the propagated errors, around several wavelengths
         snr5500 = snr_in(comb_flux, comb_sig, comb_mask, 5450, 5550)
         bands = {lam: snr_in(comb_flux, comb_sig, comb_mask, lam - 50, lam + 50)
                  for lam in range(4000, 10000, 500)}
         bands = {lam: v for lam, v in bands.items() if np.isfinite(v)}
-        log(f"S/N per pixel at 5500 A (median Flux/Sigma, 5450-5550 A): {snr5500:.1f}")
-        log("S/N per pixel by wavelength: " + ", ".join(f"{lam} A: {v:.0f}" for lam, v in bands.items()))
+        log.info(f"S/N per pixel at 5500 A (median Flux/Sigma, 5450-5550 A): {snr5500:.1f}")
+        log.info("S/N per pixel by wavelength: " + ", ".join(f"{lam} A: {v:.0f}" for lam, v in bands.items()))
 
         # Write the combined spectrum
         out_path = f"{self.target_dir}OUT/{self.objid}_combined.fits"
@@ -506,7 +479,7 @@ class sci_modules:
             t.meta["NREJECT"] = (int(np.sum(n_rej)), "frame pixels rejected")
         t.meta["SNR5500"] = (snr5500, "median Flux/Sigma, 5450-5550 A")
         t.write(out_path, format="fits", overwrite=True)
-        print("Combined spectrum written to", out_path)
+        log.info(f"Combined spectrum written to {out_path}")
         self.grapher.plot_combined(gwave, comb_flux, comb_sig, snr5500)
 
         self.comb_wave = gwave
@@ -534,7 +507,7 @@ class sci_modules:
             self.comb_mask = np.asarray(t["Mask"])
         lam, flux, sig, mask = self.comb_wave, self.comb_flux, self.comb_sigma, self.comb_mask.copy()
 
-        print("Fitting the continuum")
+        log.debug("Fitting the continuum")
         regions = load_mask(self.norm_mask)
         if len(self.norm_extra_mask):
             regions = np.vstack([regions, np.array(self.norm_extra_mask, dtype=float).reshape(-1, 2)])
@@ -553,9 +526,7 @@ class sci_modules:
         msg = "Continuum: " + "; ".join(notes)
         if self.norm_clip is not None or len(self.norm_clip_regions):
             msg += f"; {int(((mask & 1) != 0).sum())} pixels flagged above the clip thresholds"
-        print(msg)
-        with open(self.target_dir+"OUT/KARP_OUT_log.txt", "a") as fo:
-            fo.write(msg + "\n")
+        log.info(msg)
 
         t = Table([lam, norm_flux, norm_sig, cont, mask, used.astype(np.int16)],
                   names=("Lam", "Flux", "Sigma", "Continuum", "Mask", "ContFit"))
@@ -577,29 +548,6 @@ class sci_modules:
         self.cont_used = used
     
 #-----------------------------------------
-    
-    def compare_cen_lines(self, scinum1, scinum2):
-        if scinum1 not in self.cen_line_dict or scinum2 not in self.cen_line_dict:
-            print("One or both science image centerlines not found.")
-            return None
-    
-        cl1 = self.cen_line_dict[scinum1]
-        cl2 = self.cen_line_dict[scinum2]
-    
-        min_len = min(len(cl1), len(cl2))
-        cl1 = cl1[:min_len]
-        cl2 = cl2[:min_len]
-    
-        delta = cl2 - cl1
-        abs_diff = np.abs(delta)
-        mean_diff = np.mean(abs_diff)
-        max_diff = np.max(abs_diff)
-    
-        print(f"Comparison between image {scinum1} and {scinum2}:")
-        print(f"  Mean absolute difference: {mean_diff:.3f} pixels")
-        print(f"  Max absolute difference: {max_diff:.3f} pixels")
-    
-        return delta
     
     def find_coarse_trace(self, sci_final_1, block=100, search=10):
         """
@@ -654,7 +602,7 @@ class sci_modules:
         coarse = self.find_coarse_trace(sci_final_1)
 
         # Fit a Gaussian to each row around the coarse trace
-        print("KARP fitting centerline")
+        log.debug("Fitting the trace")
         fit_args = build_fit_args(sci_final_1, coarse, self.appw, self.buffw, self.bckw)
         cen_fit = np.array(
             Parallel(n_jobs=-1)(delayed(fit_cent_gaussian)(*args) for args in tqdm(fit_args))
@@ -683,8 +631,7 @@ class sci_modules:
 
         msg = (f"Trace: order {self.trace_order} polynomial, {used.sum()} of {n_rows} rows used, "
                f"residual scatter {scatter:.3f} pix, columns {cen_line.min()}-{cen_line.max()}")
-        print(msg)
-        if (verbose == True):
-            print("Trace polynomial coefficients:", poly.convert().coef)
+        log.info(msg)
+        log.debug(f"Trace polynomial coefficients: {poly.convert().coef}")
 
         return cen_line, trace, cen_fit

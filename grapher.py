@@ -5,6 +5,8 @@ aux grapher module for KARP
 '''
 
 #import packages
+import matplotlib
+matplotlib.use("Agg") # Files only; no display needed
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -19,21 +21,21 @@ class grapher:
         self.buffw = int(ext["buffer"]) # Width of the buffer in pixels (on either side of the appature, so 4 is two, 4 pix buffers su,etrically spaced around the center line)
         self.bckw = int(ext["background"]) # The width of the background in pixels, (on either side of the buffer)
 
-    def plot_image(self, image, name):        
-        plt.clf()
-        plt.imshow(image)
-        plt.colorbar()
-        plt.title(name + ' Image')
-        plt.savefig(self.target_dir+"OUT/"+self.objid+"_"+name+".png")
-        
+    def _image(self, image, title, path):
+        fig, ax = plt.subplots(figsize=(6, 10))
+        im = ax.imshow(image, origin="lower", aspect="auto")
+        fig.colorbar(im, ax=ax)
+        ax.set_title(title)
+        fig.savefig(path)
+        plt.close(fig)
+
+    def plot_image(self, image, name):
+        self._image(np.asarray(image), name + " Image", self.target_dir + "OUT/" + self.objid + "_" + name + ".png")
+
     def plot_sci_final(self, sci_final, scinum):
-        plt.clf()
-        plt.imshow(sci_final)
-        plt.colorbar()
-        plt.title('Final Science ' + str(scinum))
-        plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+self.objid+"_final_sci" + str(scinum)+".png")
-        print("Master Science Number: " + str(scinum) + " Made")
-        
+        self._image(sci_final, "Final Science " + str(scinum),
+                    self.target_dir + "ImageNumber_" + str(scinum) + "/" + self.objid + "_final_sci" + str(scinum) + ".png")
+
     def gauss_cen_plots(self, sci1_fit, cen_line, scinum):
     
         # ---- Ensure target directory exists ----
@@ -56,6 +58,7 @@ class grapher:
             ax1.legend()
             fig1.tight_layout()
             fig1.savefig(os.path.join(save_dir, f"Sci_Gcen_y_Cenline_{scinum}.png"))
+            plt.close(fig1)
     
             # ---- Plot 2: sigma vs index ----
             fig2, ax2 = plt.subplots(figsize=(8, 6))
@@ -65,6 +68,7 @@ class grapher:
             ax2.set_ylabel("G fit Sig", size=14)
             fig2.tight_layout()
             fig2.savefig(os.path.join(save_dir, f"Sci_Gsig_y_{scinum}.png"))
+            plt.close(fig2)
     
             # ---- Plot 3: zoomed-in sigma plot ----
             fig3, ax3 = plt.subplots(figsize=(8, 6))
@@ -75,6 +79,7 @@ class grapher:
             ax3.set_ylim(0, 2)
             fig3.tight_layout()
             fig3.savefig(os.path.join(save_dir, f"Sci_Gsig_y_ZOOM{scinum}.png"))
+            plt.close(fig3)
             
     def lam_cal_res(self, pixc, del_lam, scinum):
         fig, axL = plt.subplots(1, 1, figsize=(8,6))
@@ -88,7 +93,6 @@ class grapher:
         plt.close(fig)
         
     def lam_cal_res_vel(self, pixc, res_vel, scinum):
-        plt.cla()
         fig, axV = plt.subplots(1, 1, figsize=(8,6))
         axV.scatter(pixc,res_vel,color="green")
         axV.axhline(0,linestyle="--",color="black")
@@ -100,13 +104,12 @@ class grapher:
     
     def plot_cen_line(self, cen_line, scinum):
         fig, axcs = plt.subplots(1, 1, figsize=(8,6))
-        censcat = np.arange(0,len(cen_line),1)
-        axcs.scatter(censcat,cen_line, s=3)
+        axcs.scatter(np.arange(len(cen_line)), cen_line, s=3)
         axcs.set_xlabel("Y Pixel")
         axcs.set_ylabel("X Pixel")
-        plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"cen_line_"+str(scinum)+".png")
-        #print("len(cen_line)",len(cen_line))
-        
+        fig.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"cen_line_"+str(scinum)+".png")
+        plt.close(fig)
+
     def plot_extraction_rows(self, diag, scinum):
         """
         For a sample of rows: the data across the slit, the sky fit, the aperture and
@@ -136,34 +139,35 @@ class grapher:
             plt.close(fig)
             
     def plot_raw_flux(self, flux_raw1, scinum):
-        plt.cla()
-        y_pix = np.arange(0,len(flux_raw1),1)
-        plt.scatter(y_pix,flux_raw1, s=1)
-        plt.xlabel("Y Pixel")
-        plt.ylabel("Background subtracted Flux")
-        plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Flux_bsub_"+str(scinum)+".png", dpi=300)
-        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.scatter(np.arange(len(flux_raw1)), flux_raw1, s=1)
+        ax.set_xlabel("Y Pixel")
+        ax.set_ylabel("Background subtracted Flux (Electrons)")
+        fig.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Flux_bsub_"+str(scinum)+".png", dpi=300)
+        plt.close(fig)
+
     def plot_sci_lamcal(self, y_lam, y_pix, flux_raw_cor1, fit, v_helio, scinum):
         fig, ax2 = plt.subplots(1, 1, figsize=(8,6))
-        ax2.scatter(y_lam(y_pix, fit, v_helio),flux_raw_cor1, s=1)
-        ax2.axvline(x=6562.81,color='red')
-        ax2.axvline(x=4861.35,color='cyan')
-        ax2.axvline(x=4340.47,color='blueviolet')
-        plt.xlabel("Wavelength (A)")
-        plt.ylabel("Background subtracted Flux (Electrons)")
-        plt.ylim(0,30000)
-        plt.title("Sci Image"+str(scinum))
-        plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Flux_LamCal_"+str(scinum)+".png", dpi=300)
-    
+        ax2.scatter(y_lam(y_pix, fit, v_helio), flux_raw_cor1, s=1)
+        for lam, color in ((6562.81, "red"), (4861.35, "cyan"), (4340.47, "blueviolet")): # H alpha, beta, gamma
+            ax2.axvline(x=lam, color=color)
+        ax2.set_xlabel("Wavelength (A)")
+        ax2.set_ylabel("Background subtracted Flux (Electrons)")
+        ax2.set_title("Sci Image " + str(scinum))
+        fig.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Flux_LamCal_"+str(scinum)+".png", dpi=300)
+        plt.close(fig)
+
     def plot_sci_lamcal_res(self, y_lam, y_pix, flux_raw_cor1, rnErr, fit, v_helio, scinum):
-        plt.cla() # Clear plt to prevent over plotting
         fig, axE = plt.subplots(1, 1, figsize=(8,6))
-        axE.scatter(y_lam(y_pix, fit, v_helio), flux_raw_cor1, s=1)
-        axE.scatter(y_lam(y_pix, fit, v_helio), rnErr, s=1,color='red')
-        axE.set_xlabel("Wavelength (A), Error (10x)")
-        axE.set_ylabel("Background subtracted Flux (Electrons)")
-        plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Flux_LamCal_Res_"+str(scinum)+".png", dpi=300)   
-        
+        lam = y_lam(y_pix, fit, v_helio)
+        axE.scatter(lam, flux_raw_cor1, s=1, label="flux")
+        axE.scatter(lam, rnErr, s=1, color="red", label="error")
+        axE.set_xlabel("Wavelength (A)")
+        axE.set_ylabel("Electrons")
+        axE.legend()
+        fig.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Flux_LamCal_Res_"+str(scinum)+".png", dpi=300)
+        plt.close(fig)
+
     def plot_combined(self, lam, flux, sigma, snr):
         """Combined (not normalized) spectrum and its error."""
         fig, ax = plt.subplots(figsize=(10, 6))
