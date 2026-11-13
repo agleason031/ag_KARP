@@ -41,8 +41,12 @@ ATOL = 1e-9
 # running the pipeline
 # ---------------------------------------------------------------------------
 
-def write_run_params(run_dir):
-    """Copy the parameter file with dloc and target_dir pointed at absolute paths."""
+def write_run_params(run_dir, overrides=None):
+    """
+    Copy the parameter file with dloc and target_dir pointed at absolute paths,
+    and any `overrides` ({key: value}) applied.
+    """
+    overrides = dict(overrides or {})
     lines = []
     for line in PARAMS.read_text().splitlines():
         key = line.split("=", 1)[0].strip()
@@ -50,20 +54,23 @@ def write_run_params(run_dir):
             line = f"dloc = {DATA}/"
         elif key == "target_dir":
             line = f"target_dir = {run_dir}/"
+        elif key in overrides and not line.lstrip().startswith("#"):
+            line = f"{key} = {overrides.pop(key)}"
         lines.append(line)
+    lines += [f"{k} = {v}" for k, v in overrides.items()] # keys not in the file
     path = run_dir / "run.kparam"
     path.write_text("\n".join(lines) + "\n")
     return path
 
 
-def run_pipeline():
+def run_pipeline(overrides=None):
     """Run ag_KARP.py as __main__ and return (its globals, run directory)."""
     if not DATA.is_dir():
         sys.exit(f"Test data not found at {DATA}")
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = RUNS / stamp
     run_dir.mkdir(parents=True)
-    kparam = write_run_params(run_dir)
+    kparam = write_run_params(run_dir, overrides)
 
     sys.path.insert(0, str(REPO))
     old_argv, old_cwd = sys.argv, os.getcwd()
@@ -114,10 +121,14 @@ def snapshot(g, run_dir):
             snap[f"norm_lam_{n}"] = np.asarray(t["Lam"])
             snap[f"norm_flux_{n}"] = np.asarray(t["Flux"])
             snap[f"norm_sigma_{n}"] = np.asarray(t["Sigma"])
+            if "Mask" in t.colnames:
+                snap[f"norm_mask_{n}"] = np.asarray(t["Mask"])
 
     snap["comb_lam"] = np.asarray(sm.gwave)
     snap["comb_flux"] = np.asarray(sm.med_comb)
     snap["comb_sigma"] = np.asarray(sm.sig_final)
+    if hasattr(sm, "comb_mask"):
+        snap["comb_mask"] = np.asarray(sm.comb_mask)
     snap["snr"] = np.array([g.get("SNR", np.nan)])
     return snap
 
@@ -217,9 +228,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["make-reference", "compare"])
     ap.add_argument("--note", default="", help="reason for a new reference (stored in its metadata)")
+    ap.add_argument("--ref", type=Path, default=None,
+                    help="compare against this snapshot.npz (e.g. an earlier run) instead of the saved reference")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="override a parameter for this run (repeatable)")
     args = ap.parse_args()
+    overrides = dict(kv.split("=", 1) for kv in args.set)
+    if overrides and args.command == "make-reference":
+        sys.exit("--set is for experiments; edit G093440.kparam to change the reference parameters.")
 
-    g, run_dir = run_pipeline()
+    g, run_dir = run_pipeline(overrides)
     snap = snapshot(g, run_dir)
     np.savez_compressed(run_dir / "snapshot.npz", **snap)
 
@@ -234,10 +252,14 @@ def main():
         print(json.dumps(meta, indent=2))
         return 0
 
-    if not REF_NPZ.exists():
-        sys.exit("No reference yet; run make-reference first.")
-    ref = dict(np.load(REF_NPZ))
-    print(f"Reference: {json.loads(REF_META.read_text())}")
+    if args.ref is not None:
+        ref = dict(np.load(args.ref))
+        print(f"Reference: {args.ref}")
+    else:
+        if not REF_NPZ.exists():
+            sys.exit("No reference yet; run make-reference first.")
+        ref = dict(np.load(REF_NPZ))
+        print(f"Reference: {json.loads(REF_META.read_text())}")
     print(f"This run:  {git_info()}  output in {run_dir}")
     n = compare(ref, snap)
     print(f"\n{n} array(s) changed." if n else "\nAll arrays match the reference.")

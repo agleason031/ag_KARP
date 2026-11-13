@@ -21,10 +21,24 @@ bstop = 17
 appw = 20
 buffw = 20
 bckw = 25
-clmin = 478
-clmax = 489
+# Trace: polynomial order, and an optional starting column (blank = find automatically)
+trace_order = 3
+trace_col =
 norm_line_width = 250
 norm_line_boxcar = 70
+
+# Cosmic-ray cleaning of the 2D science frames (L.A.Cosmic); readnoise in electrons.
+# Off until overscan subtraction is added (the bias level drifts ~20-40 ADU by the science frames).
+cr_clean = false
+readnoise = 5.7
+cr_sigclip = 4.5
+
+# Optional masking (blank = off). Masked pixels keep their values and get Mask != 0.
+# The original code's clipping corresponds to:
+#   norm_clip = 1.3, comb_clip = 1.25, comb_clip_regions = [[5500, 5700, 1.05]]
+norm_clip =
+comb_clip =
+comb_clip_regions =
 
 # Only used when fit_lines = true (16 lines). Placeholder; fit_lines is off for the baseline.
 metal_mask = [2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]

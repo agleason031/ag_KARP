@@ -82,7 +82,13 @@ def format_fits_filename(dloc, num):
 
 #input string true or false and returns bool
 def string_to_bool(s):
-    return {"true": True, "false": False}.get(s.lower())
+    return {"true": True, "false": False}.get(s.strip().lower())
+
+#parameter value -> float, or None when blank / "none" (used for optional settings)
+def optional_float(s):
+    if s is None or s.strip().lower() in ("", "none"):
+        return None
+    return float(s)
 
 def build_fit_args(sci_final_1, cen_line, appw, buffw, bckw):
     n_rows, row_len = sci_final_1.shape

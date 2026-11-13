@@ -7,37 +7,24 @@ Created on Wed Jun  4 15:52:33 2025
 """
 from tqdm import tqdm
 from scipy.optimize import curve_fit
-from scipy.ndimage import uniform_filter1d, uniform_filter
+from scipy.ndimage import uniform_filter
 from scipy.interpolate import interp1d
 from astropy.nddata import CCDData
 from astropy.table import Table
+from astropy.stats import mad_std
+from numpy.polynomial import Polynomial
 from functions import fit_cent_gaussian, G, build_fit_args, gaussian_integral_vec
-from functions import format_fits_filename, y_lam, con_lam
+from functions import format_fits_filename, y_lam, con_lam, string_to_bool, optional_float
 from sci_tools import heliocentric_correction, fit_all_fluxes
 from joblib import Parallel, delayed
 import ccdproc
+import ast
 import os
+import warnings
 import numpy as np
 
 #-------------------------------------
 #helper functions
-
-def run_fit(args):
-    row, clr, appw, buffw, bckw = args
-    return fit_cent_gaussian(row, clr, appw, buffw, bckw)
-
-def nan_aware_smooth(arr, window=100):
-    """
-    Replace NaNs in an array by computing a moving average
-    over a fixed window, ignoring NaNs in the computation.
-    """
-    valid = ~np.isnan(arr) # Boolean mask of valid values
-    smoothed = uniform_filter1d(np.nan_to_num(arr), size=window, mode='nearest')  # Sum of values (zeros where NaN)
-    norm = uniform_filter1d(valid.astype(float), size=window, mode='nearest')     # Count of valid values
-    with np.errstate(invalid='ignore'): # Ignore divide-by-zero warnings
-        result = smoothed / norm  # True local mean (ignoring NaNs)
-        result[~valid] = result[~valid] # Replace only NaNs
-    return result
 
 #-------------------------
 
@@ -54,11 +41,24 @@ class sci_modules:
         self.appw = int(np.round(float(params["appw"])-1)/2) # So an appature width inputu of 13 is two 6 pixel sides, and if you put 14 it rounds to 13
         self.buffw = int(params["buffw"]) # Width of the buffer in pixels (on either side of the appature, so 4 is two, 4 pix buffers su,etrically spaced around the center line)
         self.bckw = int(params["bckw"]) # The width of the background in pixels, (on either side of the buffer)
-        self.clmin = int(params["clmin"]) # The minimum center line trace value that KARP will fit
-        self.clmax = int(params["clmax"]) # The minimum center line trace value that KARP will fit
+        self.trace_order = int(params.get("trace_order", 3)) # Polynomial order of the trace fit
+        trace_col = params.get("trace_col", "").strip() # Optional starting column for the trace; found automatically if blank
+        self.trace_col = int(trace_col) if trace_col else None
         self.target_dir = str(params["target_dir"]) 
         self.norm_line_width = int(params["norm_line_width"])  # When normalizing spectra, this is the one-half width of the line KARP will try and fit at each point
-        self.norm_line_boxcar = int(params["norm_line_boxcar"]) # When normalizing the spectra, 
+        self.norm_line_boxcar = int(params["norm_line_boxcar"]) # When normalizing the spectra,
+        # Cosmic-ray cleaning of the 2D science frames (L.A.Cosmic)
+        # Off by default until overscan subtraction is in: without it the background is
+        # negative and L.A.Cosmic's noise model flags ~4% of the frame
+        self.cr_clean = string_to_bool(params.get("cr_clean", "false"))
+        self.readnoise = float(params.get("readnoise", 5.7)) # electrons; 5.7 measured from the 2024-09-29 bias frames
+        self.cr_sigclip = float(params.get("cr_sigclip", 4.5)) # detection threshold in sigma
+        # Optional masking thresholds (blank or none = off). Masked pixels keep their
+        # value but get a nonzero Mask flag in the output tables.
+        self.norm_clip = optional_float(params.get("norm_clip")) # normalized flux >= this is masked, per frame
+        self.comb_clip = optional_float(params.get("comb_clip")) # combined flux > this is masked
+        # List of [lam_min, lam_max, threshold]: combined flux above threshold in that range is masked
+        self.comb_clip_regions = ast.literal_eval(params.get("comb_clip_regions", "").strip() or "[]")
         self.gwave = []
         self.med_comb = []
         self.sig_final = []
@@ -98,7 +98,18 @@ class sci_modules:
         else:
             sci_final = np.asarray((ccdproc.subtract_bias(CCDData.read(sci_location,format = 'fits', unit = "adu"),masterbias).data)/final_flat)
             # Convert from ADU to electrons
-            sci_final_1 = sci_final*0.6
+            gain = 0.6 # e-/ADU
+            sci_final_1 = sci_final*gain
+
+            if self.cr_clean:
+                # Data are in electrons and still include sky, as L.A.Cosmic's noise model expects
+                sci_final_1, cr_mask = ccdproc.cosmicray_lacosmic(
+                    sci_final_1, sigclip=self.cr_sigclip, gain=1.0, readnoise=self.readnoise,
+                    satlevel=65535 * gain, verbose=False)
+                msg = f"Cosmic rays: {int(cr_mask.sum())} pixels cleaned in image {scinum}"
+                print(msg)
+                with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
+                    f.write(msg + "\n")
             self.sci_final_dict[scinum] = sci_final_1
 
             # Plot and write to disk only when first created; a cached image was already written
@@ -471,11 +482,16 @@ class sci_modules:
             self.grapher.plot_fit_over_flux(fitted_wavelengths, smooth_cont, fitted_values, fitted_fluxes, lam_removea, flux_mask_removea, lam_red, lam_remove, flux_mask_red, flux_mask_remove, lam_reda, flux_mask_reda, scinum)
                 
         Fnorm = np.array(fitted_fluxes) / smooth_cont # Divide raw flux by our continuum that we just fit
-        if verbose:
-            flagged = Fnorm >= 1.3
-            print("Found Fnorm >= 1.3:", Fnorm[flagged])
-        Fnorm = np.where(Fnorm >= 1.3, 1.0, Fnorm)
-        
+
+        # Flag (don't overwrite) pixels above the optional threshold
+        mask = np.zeros(len(Fnorm), dtype=np.int16) # 0 = good, 1 = above norm_clip
+        if self.norm_clip is not None:
+            flagged = Fnorm >= self.norm_clip
+            mask[flagged] = 1
+            print(f"Masked {int(flagged.sum())} pixels with normalized flux >= {self.norm_clip} in image {scinum}")
+            if verbose:
+                print("Masked values:", Fnorm[flagged])
+
         sf_sm = np.sqrt(np.array(fitted_fluxes) + np.array(fitted_sky)) / smooth_cont
         
         if (verbose == True):
@@ -484,7 +500,7 @@ class sci_modules:
         
         # Write a file for the spectra of this sci image
         # In the form G123456_61_OUT.fits in the OUT folder
-        t = Table([fitted_wavelengths,Fnorm,sf_sm], names=('Lam', "Flux", "Sigma"))
+        t = Table([fitted_wavelengths,Fnorm,sf_sm,mask], names=('Lam', "Flux", "Sigma", "Mask"))
         t.write(self.target_dir+"OUT/"+str(self.objid)+"_"+str(scinum)+"_OUT.fits", format='fits', overwrite=True)
 
 #---------------------------------------------
@@ -515,42 +531,56 @@ class sci_modules:
         gwave = np.asarray(Table.read(file_names[0])["Lam"])
 
         def combine(files):
-            """Median-combine `files` on gwave. Returns (med_comb, gsig, rms)."""
-            # Interpolate onto reference grid
+            """
+            Median-combine `files` on gwave. Returns (med_comb, comb_mask, gsig, rms).
+            comb_mask bits: 1 = above a comb_clip threshold, 2 = no unmasked data.
+            """
+            # Interpolate onto reference grid; masked pixels are left out of the median
             gflux_interp = []
             gsig = []
             for fname in files:
                 t = Table.read(fname)
-                f = interp1d(t["Lam"], t["Flux"], bounds_error=False, fill_value=np.nan)
+                flux = np.array(t["Flux"], dtype=float)
+                if "Mask" in t.colnames:
+                    flux[np.asarray(t["Mask"]) != 0] = np.nan
+                f = interp1d(t["Lam"], flux, bounds_error=False, fill_value=np.nan)
                 s = interp1d(t["Lam"], t["Sigma"], bounds_error=False, fill_value=np.nan)
                 gflux_interp.append(f(gwave))
                 gsig.append(s(gwave))
 
             # Stack and take median, ignoring NaNs
-            med_comb = np.nanmedian(np.array(gflux_interp), axis=0)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning) # All-NaN columns are flagged below
+                med_comb = np.nanmedian(np.array(gflux_interp), axis=0)
 
-            # Remove zeroth order line and any remaning outliers from bad pixels
-            med_comb[(gwave >= 5500) & (gwave <= 5700) & (med_comb > 1.05)] = 1
-            med_comb[med_comb > 1.25] = 1
+            # Flag (don't overwrite) values above the optional thresholds,
+            # e.g. the zeroth order or remaining bad pixels
+            comb_mask = np.zeros(len(gwave), dtype=np.int16)
+            with np.errstate(invalid="ignore"):
+                if self.comb_clip is not None:
+                    comb_mask[med_comb > self.comb_clip] |= 1
+                for lam_min, lam_max, threshold in self.comb_clip_regions:
+                    comb_mask[(gwave >= lam_min) & (gwave <= lam_max) & (med_comb > threshold)] |= 1
+            comb_mask[np.isnan(med_comb)] |= 2
 
             print("Computing RMS")
-            # Compute RMS in 5450–5550
-            mask = (gwave >= 5450) & (gwave <= 5550) & (~np.isnan(med_comb))
+            # Compute RMS in 5450–5550 from unmasked pixels
+            mask = (gwave >= 5450) & (gwave <= 5550) & (comb_mask == 0)
             rms = np.sqrt(np.mean((1 - med_comb[mask])**2))
-            return med_comb, np.array(gsig), rms
+            return med_comb, comb_mask, np.array(gsig), rms
 
         if jackknife == True:
             # Leave out each file in turn and report the S/N, for comparison only
             for i in range(len(file_names)):
                 selected_files = [f for j, f in enumerate(file_names) if j != i]
-                _, _, rms_i = combine(selected_files)
+                _, _, _, rms_i = combine(selected_files)
                 print("SNR at 5500:",1/rms_i,f"with files {selected_files}")
                 with open(log_path, "a") as fo:
                     fo.write("SNR at 5500:"+str(1/rms_i)+"\n")
                     fo.write(f"with files {selected_files}\n")
 
         # The combined spectrum always uses all files
-        med_comb, gsig, rms = combine(file_names)
+        med_comb, comb_mask, gsig, rms = combine(file_names)
 
         # Calculate and print SNR at 5500A
         print("SNR at 5500:",1/rms)
@@ -583,7 +613,7 @@ class sci_modules:
 
         # Write the combined spectrum
         out_path = f"{self.target_dir}OUT/{self.objid}_combined.fits"
-        t = Table([gwave, med_comb, sig_final], names=("Lam", "Flux", "Sigma"))
+        t = Table([gwave, med_comb, sig_final, comb_mask], names=("Lam", "Flux", "Sigma", "Mask"))
         t.meta["SCINUMS"] = ",".join(str(n) for n in scinums)
         t.meta["SNR5500"] = 1/rms
         t.write(out_path, format="fits", overwrite=True)
@@ -594,6 +624,7 @@ class sci_modules:
         self.gwave = gwave
         self.med_comb = med_comb
         self.sig_final = sig_final
+        self.comb_mask = comb_mask
 
         return 1/rms
     
@@ -622,80 +653,88 @@ class sci_modules:
     
         return delta
     
+    def find_coarse_trace(self, sci_final_1, block=100, search=10):
+        """
+        Rough trace position for every row, from the peak of the median spatial
+        profile in blocks of `block` rows. Starts at the middle of the frame and
+        walks outward, looking within +/- `search` columns of the previous block's
+        peak, so it follows any tilt. Blocks with no clear peak are interpolated over.
+        """
+        n_rows, n_cols = sci_final_1.shape
+        starts = np.arange(0, n_rows, block)
+        centers = starts + block / 2
+        profiles = np.array([np.nanmedian(sci_final_1[s:s+block], axis=0) for s in starts])
+        profiles -= np.nanmedian(profiles, axis=1, keepdims=True) # Remove the sky/background level
+
+        if self.trace_col is None:
+            # Brightest column in the median spatial profile of the middle half of the frame
+            col0 = int(np.nanargmax(np.nanmedian(sci_final_1[n_rows//4 : 3*n_rows//4], axis=0)))
+        else:
+            col0 = self.trace_col
+
+        def peak_near(k, col):
+            lo, hi = max(0, col - search), min(n_cols, col + search + 1)
+            seg = profiles[k, lo:hi]
+            j = int(np.nanargmax(seg))
+            # Require a clear peak (5x the profile's robust scatter)
+            return lo + j if seg[j] > 5 * mad_std(profiles[k], ignore_nan=True) else None
+
+        peaks = np.full(len(starts), np.nan)
+        k_mid = len(starts) // 2
+        for direction in (range(k_mid, len(starts)), range(k_mid - 1, -1, -1)):
+            col = col0
+            for k in direction:
+                p = peak_near(k, col)
+                if p is not None:
+                    peaks[k] = p
+                    col = p
+
+        found = ~np.isnan(peaks)
+        if found.sum() < 2:
+            raise RuntimeError("KARP could not find the trace; set trace_col in the parameter file")
+        return np.round(np.interp(np.arange(n_rows), centers[found], peaks[found])).astype(int)
+
     def fit_trace(self, sci_final_1, verbose):
-        n_rows = sci_final_1.shape[0] #gets row num
-        cen_line = np.round(np.linspace(self.clmin, self.clmax, n_rows)).astype(int)
-        # Note that this repeats each integer 51 times, stretching it to 1124
-        
-        # Fit Gaussian to each row in sci_final_1 using current cen_line estimate
+        """
+        Trace center (column) for every row: Gaussian fits per row around a coarse
+        trace, then a polynomial of order self.trace_order fit to the Gaussian
+        centers with iterative 3-sigma clipping. Rounded to whole pixels.
+        """
+        n_rows = sci_final_1.shape[0]
+        rows = np.arange(n_rows)
+        coarse = self.find_coarse_trace(sci_final_1)
+
+        # Fit a Gaussian to each row around the coarse trace
         print("KARP fitting centerline")
-        
-        # Fit and collect results in a list (each entry is a tuple: a, mu, sig, bck)
-        fit_args = build_fit_args(sci_final_1, cen_line, self.appw, self.buffw, self.bckw)
+        fit_args = build_fit_args(sci_final_1, coarse, self.appw, self.buffw, self.bckw)
         cen_fit = np.array(
             Parallel(n_jobs=-1)(delayed(fit_cent_gaussian)(*args) for args in tqdm(fit_args))
             )
-        
-        # Convert to NumPy array and extract relevant fit parameters
-        a_vals = cen_fit[:, 0]                    # Amplitudes
-        mu_vals = cen_fit[:, 1]                   # Gaussian centers (used for center line)
-      
-        # Create preliminary centerline using fitted mu values
-        # If a or mu is NaN, mark the entry as NaN in cen_line for smoothing later
-        cen_line = np.round(mu_vals).astype(float)
-        cen_line[np.isnan(a_vals) | np.isnan(mu_vals)] = np.nan  # Replace invalid fits with NaN
-        
-        # Smooth NaN values in cen_line using a local (moving average) window
-        # We use a NaN-aware uniform filter that preserves non-NaN values and smooths only missing ones
-        print("Smoothing NaNs in centerline", flush=True)
-        smoothed_mu = nan_aware_smooth(cen_line, window=100)
-        
-        # Replace NaNs with their smoothed estimates
-        cen_line[np.isnan(cen_line)] = np.round(smoothed_mu[np.isnan(cen_line)])
-        
-        # Final pass: Replace any remaining NaNs using local median of ±50 pixels
-        print("Replacing remaining NaNs with local median")
-        for i in range(len(cen_line)):
-            if np.isnan(cen_line[i]):
-                low = max(0, i - 50) # Use max and min to account for edges
-                high = min(len(cen_line), i + 50)
-                window_vals = cen_line[low:high]
-                local_valid = window_vals[~np.isnan(window_vals)]
-                if len(local_valid) > 0:
-                    cen_line[i] = np.median(local_valid)
-                else:
-                    # As a last resort (edge case), use global median
-                    cen_line[i] = np.nanmedian(cen_line)
-        
-        # Replace remaining outliers that deviate too much from their neighborhood
-        # This helps fix spike-like errors or fit artifacts
-        print("Replacing outlier values")    
-        for i in range(50, len(cen_line) - 200):  # Avoid edges
-            # Get 200-pixel local window of mu values
-            local = mu_vals[i - 100:i + 100]
-            local = local[~np.isnan(local)]       # Ignore any NaNs in local values
-        
-            if len(local) == 0:
-                continue  # Skip if all neighbors are NaN
-        
-            cmean = np.mean(local)                # Local mean for comparison
-        
-            # Condition 1: Implausible high value (usually near image end)
-            # Condition 2: Large deviation from local average
-            if cen_line[i] > cen_line[-1] or abs(cen_line[i] - cmean) > 1.2:
-                if (verbose == True):
-                    print(f"Outlier at {i}: Replacing {cen_line[i]} with {np.round(cmean)}")
-                cen_line[i] = int(np.round(cmean))     # Replace with smoothed local mean
-        
-        # For the tails of the image if the fit becomes very poor, bin to the set max values
-        for i in range(len(cen_line)):
-            if cen_line[i] > self.clmax:
-                cen_line[i] = int(self.clmax)
-            if cen_line[i] < self.clmin:
-                cen_line[i] = int(self.clmin)
-                
-        # cen_line is now cleaned, smoothed, and robust to fitting artifacts
-        cen_line = np.sort(cen_line) # Doesn't change the number of cen_line pixels, just sorts outliers
-        cen_line = np.round(cen_line).astype(int)
-        
+        a_vals, mu_vals, sig_vals = cen_fit[:, 0], cen_fit[:, 1], cen_fit[:, 2]
+
+        # Usable fits: converged, centered within the aperture, and not too broad
+        ok = (np.isfinite(a_vals) & np.isfinite(mu_vals)
+              & (np.abs(mu_vals - coarse) < self.appw) & (sig_vals < self.appw))
+        if ok.sum() <= self.trace_order:
+            raise RuntimeError("Too few rows with a usable Gaussian fit to fit the trace")
+
+        # Polynomial fit with iterative 3-sigma clipping (rejected rows can come back in)
+        used = ok.copy()
+        for _ in range(10):
+            poly = Polynomial.fit(rows[used], mu_vals[used], self.trace_order)
+            resid = mu_vals - poly(rows)
+            scatter = mad_std(resid[used])
+            new_used = ok & (np.abs(resid) < 3 * scatter)
+            if np.array_equal(new_used, used):
+                break
+            used = new_used
+
+        cen_line = np.round(poly(rows)).astype(int)
+
+        msg = (f"Trace: order {self.trace_order} polynomial, {used.sum()} of {n_rows} rows used, "
+               f"residual scatter {scatter:.3f} pix, columns {cen_line.min()}-{cen_line.max()}")
+        print(msg)
+        if (verbose == True):
+            print("Trace polynomial coefficients:", poly.convert().coef)
+
         return cen_line
