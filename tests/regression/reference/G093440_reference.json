@@ -1,11 +1,11 @@
 {
-  "created": "2026-11-13T04:40:24",
+  "created": "2026-11-13T05:01:28",
   "git": {
-    "commit": "1c4eb85",
+    "commit": "5abf221",
     "dirty": false
   },
-  "note": "Automatic wavelength calibration, NIST Ar I list",
-  "snr": 130.1469029510311,
+  "note": "New extraction (optimal), propagated errors",
+  "snr": 162.11221339728132,
   "v_helio": {
     "61": -4.147310855097247,
     "62": -4.160835890814477,
