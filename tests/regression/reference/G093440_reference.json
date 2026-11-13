@@ -1,10 +1,10 @@
 {
-  "created": "2026-11-13T02:38:33",
+  "created": "2026-11-13T03:01:12",
   "git": {
-    "commit": "1970d4a",
+    "commit": "33bd977",
     "dirty": false
   },
-  "note": "After arc column + dropped-row wavelength fixes",
+  "note": "Combined grid now from first requested frame (61)",
   "snr": 132.32710726029669,
   "v_helio": -4.245913955051133
 }
