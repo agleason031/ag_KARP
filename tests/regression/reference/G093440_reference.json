@@ -1,10 +1,10 @@
 {
-  "created": "2026-11-13T03:25:34",
+  "created": "2026-11-13T03:40:35",
   "git": {
-    "commit": "98feffe",
+    "commit": "3cd2691",
     "dirty": false
   },
-  "note": "Polynomial trace; Mask columns; CR off",
-  "snr": 132.31159554841068,
+  "note": "Overscan/trim/gain, fixed flat combine, CR cleaning on",
+  "snr": 130.0973656379763,
   "v_helio": -4.245913955051133
 }
