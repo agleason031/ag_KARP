@@ -15,7 +15,7 @@ from astropy.stats import mad_std
 from numpy.polynomial import Polynomial
 from functions import fit_cent_gaussian, G, build_fit_args, gaussian_integral_vec
 from functions import format_fits_filename, y_lam, con_lam, string_to_bool, optional_float
-from sci_tools import heliocentric_correction, fit_all_fluxes
+from sci_tools import heliocentric_correction, fit_all_fluxes, detector_geometry, read_reduced
 from joblib import Parallel, delayed
 import ccdproc
 import ast
@@ -48,9 +48,7 @@ class sci_modules:
         self.norm_line_width = int(params["norm_line_width"])  # When normalizing spectra, this is the one-half width of the line KARP will try and fit at each point
         self.norm_line_boxcar = int(params["norm_line_boxcar"]) # When normalizing the spectra,
         # Cosmic-ray cleaning of the 2D science frames (L.A.Cosmic)
-        # Off by default until overscan subtraction is in: without it the background is
-        # negative and L.A.Cosmic's noise model flags ~4% of the frame
-        self.cr_clean = string_to_bool(params.get("cr_clean", "false"))
+        self.cr_clean = string_to_bool(params.get("cr_clean", "true"))
         self.readnoise = float(params.get("readnoise", 5.7)) # electrons; 5.7 measured from the 2024-09-29 bias frames
         self.cr_sigclip = float(params.get("cr_sigclip", 4.5)) # detection threshold in sigma
         # Optional masking thresholds (blank or none = off). Masked pixels keep their
@@ -73,7 +71,9 @@ class sci_modules:
         self.cen_line_dict = {}
         self.lam_fit_dict = {}
         self.lam_fit_linenum_dict = {}
-        self.argon = np.asarray(CCDData.read(format_fits_filename(self.dloc, self.argnum), unit="adu").data)
+        self.geom = detector_geometry(params) # Amplifier layout, overscan columns, gains
+        # Arc frame, overscan-subtracted and trimmed (electrons)
+        self.argon = np.asarray(read_reduced(format_fits_filename(self.dloc, self.argnum), self.geom).data)
         
     #does all the image reduction through wavelength calibration
     def reduce_image(self, scinum, global_args):
@@ -96,16 +96,16 @@ class sci_modules:
         if scinum in self.sci_final_dict:
             sci_final_1 = self.sci_final_dict[scinum]
         else:
-            sci_final = np.asarray((ccdproc.subtract_bias(CCDData.read(sci_location,format = 'fits', unit = "adu"),masterbias).data)/final_flat)
-            # Convert from ADU to electrons
-            gain = 0.6 # e-/ADU
-            sci_final_1 = sci_final*gain
+            # Overscan-subtract, trim and convert to electrons, then remove the bias structure and flat-field
+            sci_raw = read_reduced(sci_location, self.geom)
+            sci_final = np.asarray(ccdproc.subtract_bias(sci_raw, masterbias).data)/final_flat
+            sci_final_1 = sci_final
 
             if self.cr_clean:
                 # Data are in electrons and still include sky, as L.A.Cosmic's noise model expects
                 sci_final_1, cr_mask = ccdproc.cosmicray_lacosmic(
                     sci_final_1, sigclip=self.cr_sigclip, gain=1.0, readnoise=self.readnoise,
-                    satlevel=65535 * gain, verbose=False)
+                    satlevel=150000, verbose=False) # Full well, 150k e- (KOSMOS spec sheet)
                 msg = f"Cosmic rays: {int(cr_mask.sum())} pixels cleaned in image {scinum}"
                 print(msg)
                 with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
@@ -115,7 +115,7 @@ class sci_modules:
             # Plot and write to disk only when first created; a cached image was already written
             if (verbose == True):
                 self.grapher.plot_sci_final(sci_final, scinum)
-                sci_final_write = CCDData(sci_final, unit="adu")
+                sci_final_write = CCDData(sci_final, unit="electron")
                 sci_final_write.write(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"sci_final_"+str(scinum)+".fits", overwrite = True)
 
     #----------------------------

@@ -15,8 +15,10 @@ from astropy.stats import mad_std
 from astropy.nddata import CCDData
 from functions import G
 from numba import njit, prange
+from numpy.polynomial import Chebyshev
 import numpy as np
 import ccdproc
+import ast
 import csv
 import hashlib
 import inspect
@@ -32,8 +34,9 @@ def get_var_name(var):
             return name
     return None  # If no match is found
 
-def median_scale_func(im):
-    return np.median(im.data)
+def inv_median(im):
+    """ccdproc.combine multiplies each image by this, so return 1/median to normalize."""
+    return 1 / np.median(im.data)
 
 #returns correction needed for earth's motion
 def heliocentric_correction(objRA, objDEC, otime):
@@ -59,13 +62,63 @@ def heliocentric_correction(objRA, objDEC, otime):
     correction = correction.replace('km / s', '')
     return(float(correction))
 
-def calibration_key(bias_files, flat_files):
+# Bump when the way master calibrations are built changes, so old files on disk are rebuilt
+CAL_VERSION = 3 # 2: overscan subtraction, trimming and per-amplifier gain; 3: flat bias/scaling order
+
+def detector_geometry(params):
     """
-    Short fingerprint of the bias and flat input frames (path, size, modification time).
-    Saved calibrations are only reused when this matches, so changing the frame
-    ranges or the files themselves forces the masters to be rebuilt.
+    Detector layout from the parameter file, with defaults for KOSMOS at 2x1 binning.
+    Column ranges are 0-based and end-exclusive. Each amplifier has its data
+    columns, its overscan columns, and its gain (e-/ADU).
+    """
+    def lst(key, default):
+        v = params.get(key, "").strip()
+        return ast.literal_eval(v) if v else default
+    geom = {
+        "amp_data": lst("amp_data", [[0, 512], [512, 1024]]),
+        # Overscan strips are cols 1024-1073 (amp A) and 1074-1123 (amp B); the first
+        # 10 columns of each carry charge left over from the data and are skipped
+        "amp_overscan": lst("amp_overscan", [[1034, 1074], [1084, 1124]]),
+        "gain": lst("gain", [0.6, 0.6]), # KOSMOS spec sheet value; flats suggest ~0.72 / ~0.77
+        "overscan_order": int(params.get("overscan_order", 3)),
+    }
+    if not (len(geom["amp_data"]) == len(geom["amp_overscan"]) == len(geom["gain"])):
+        raise ValueError("amp_data, amp_overscan and gain need one entry per amplifier")
+    return geom
+
+def overscan_trim(ccd, geom):
+    """
+    For each amplifier: subtract its overscan level (row-by-row median of its overscan
+    strip, smoothed along the rows with a Chebyshev polynomial of order
+    geom["overscan_order"] and one 5-sigma clipping pass), convert to electrons with
+    its gain, and keep only the data columns. Returns CCDData in electrons.
+    """
+    data = np.asarray(ccd.data, dtype=float)
+    rows = np.arange(data.shape[0])
+    n_cols = max(c1 for _, c1 in geom["amp_data"])
+    out = np.full((data.shape[0], n_cols), np.nan)
+    for (c0, c1), (o0, o1), gain in zip(geom["amp_data"], geom["amp_overscan"], geom["gain"]):
+        level = np.median(data[:, o0:o1], axis=1)
+        model = Chebyshev.fit(rows, level, geom["overscan_order"])
+        resid = level - model(rows)
+        keep = np.abs(resid) < 5 * mad_std(resid)
+        model = Chebyshev.fit(rows[keep], level[keep], geom["overscan_order"])
+        out[:, c0:c1] = (data[:, c0:c1] - model(rows)[:, None]) * gain
+    return CCDData(out, unit="electron", meta=ccd.meta)
+
+def read_reduced(path, geom):
+    """Read a raw frame, subtract overscan, trim, and convert to electrons."""
+    return overscan_trim(CCDData.read(path, unit="adu"), geom)
+
+def calibration_key(bias_files, flat_files, geom):
+    """
+    Short fingerprint of the bias and flat input frames (path, size, modification time),
+    the detector settings, and CAL_VERSION. Saved calibrations are only reused when this
+    matches, so changing the frames, the detector settings, or the processing forces the
+    masters to be rebuilt.
     """
     h = hashlib.sha1()
+    h.update(f"v{CAL_VERSION}|{sorted(geom.items())}\n".encode())
     for kind, files in (("bias", bias_files), ("flat", flat_files)):
         h.update(kind.encode())
         for f in files:
@@ -74,9 +127,9 @@ def calibration_key(bias_files, flat_files):
     return h.hexdigest()[:16]
 
 #creates and returns bias and flat images
-def get_cal_images(bias_files, flat_files, verbose, grapher):
-    #get images from cache if already created from the same input frames
-    key = calibration_key(bias_files, flat_files)
+def get_cal_images(bias_files, flat_files, geom, verbose, grapher):
+    #get images from cache if already created from the same input frames and settings
+    key = calibration_key(bias_files, flat_files, geom)
     bias_path = grapher.target_dir + "OUT/" + grapher.objid + "_master_bias.fits"
     flat_path = grapher.target_dir + "OUT/" + grapher.objid + "_final_flat.fits"
 
@@ -85,28 +138,28 @@ def get_cal_images(bias_files, flat_files, verbose, grapher):
 
     # Load from disk if both exist and were made from these same input frames
     if os.path.exists(bias_path) and os.path.exists(flat_path):
-        masterbias = CCDData.read(bias_path, unit='adu')
+        masterbias = CCDData.read(bias_path, unit='electron')
         final_flat = CCDData.read(flat_path, unit='adu')
         if masterbias.meta.get("KARPCAL") == key and final_flat.meta.get("KARPCAL") == key:
             print("Loading disk calibration files...")
             final_flat = np.asarray(final_flat.data) # Same type as a freshly made flat
             _calibration_cache[key] = (masterbias, final_flat)
             return masterbias, final_flat
-        print("Calibration files on disk were made from different frames, rebuilding them")
+        print("Calibration files on disk were made from different frames or settings, rebuilding them")
 
-    blist = [CCDData.read(f, unit='adu') for f in bias_files]
-    flist = [CCDData.read(f, unit='adu') for f in flat_files]
+    # Overscan-subtract, trim and convert every frame to electrons before combining
+    blist = [read_reduced(f, geom) for f in bias_files]
 
     # Make a master bias from the input bias image
     print("Making Master Bias")
-    masterbias = ccdproc.combine(blist, method='median', unit='adu',sigma_clip=True, sigma_clip_low_thresh=5, sigma_clip_high_thresh=5,sigma_clip_func=np.ma.median, sigma_clip_dev_func=mad_std,mem_limit=350e6)
+    masterbias = ccdproc.combine(blist, method='median', unit='electron',sigma_clip=True, sigma_clip_low_thresh=5, sigma_clip_high_thresh=5,sigma_clip_func=np.ma.median, sigma_clip_dev_func=mad_std,mem_limit=350e6)
     
-    # Make a master flat from the flat images
+    # Make a master flat: subtract the master bias from each flat, normalize each by its
+    # median, then median-combine. (The bias has to come off before scaling, otherwise
+    # the scaled bias level stays in the flat.)
     print("Making Master Flat")
-    masterflat = ccdproc.combine(flist, method='median', scale=median_scale_func, unit='adu',sigma_clip=False,mem_limit=350e6)
-  
-    # Subtract Master Bias from Master Flat
-    masterflatDEbias = ccdproc.subtract_bias(masterflat,masterbias)
+    flist = [ccdproc.subtract_bias(read_reduced(f, geom), masterbias) for f in flat_files]
+    masterflatDEbias = ccdproc.combine(flist, method='median', scale=inv_median, unit='electron',sigma_clip=False,mem_limit=350e6)
     
     # Smooth master flatdebias:
     np_mfdb = np.asarray(masterflatDEbias) # Convert to a numpy array        

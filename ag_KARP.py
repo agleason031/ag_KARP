@@ -92,7 +92,7 @@ def process_images(x):
         flat_files = [functions.format_fits_filename(dloc, f) for f in fim]
         sci_list = [functions.format_fits_filename(dloc, s) for s in sim]
 
-        masterbias, final_flat = sci_tools.get_cal_images(bias_files, flat_files, verbose, grapher)
+        masterbias, final_flat = sci_tools.get_cal_images(bias_files, flat_files, sci_mods.geom, verbose, grapher)
         
         #individual image processing
         global_args = sci_list, masterbias, final_flat, verbose

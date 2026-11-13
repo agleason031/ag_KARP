@@ -18,6 +18,14 @@ fstop = 7
 bstart = 9
 bstop = 17
 
+# Detector layout (KOSMOS, 2x1 binning): 0-based, end-exclusive column ranges per amplifier
+amp_data = [[0, 512], [512, 1024]]
+amp_overscan = [[1034, 1074], [1084, 1124]]
+# e-/ADU per amplifier. KOSMOS spec sheet: 0.6 e-/DN, read noise 6 e-, full well 150k e-.
+# Photon-transfer on the 2024-09-29 flats gives ~0.72 (A) and ~0.77 (B) at low signal.
+gain = [0.6, 0.6]
+overscan_order = 3
+
 appw = 20
 buffw = 20
 bckw = 25
@@ -27,9 +35,8 @@ trace_col =
 norm_line_width = 250
 norm_line_boxcar = 70
 
-# Cosmic-ray cleaning of the 2D science frames (L.A.Cosmic); readnoise in electrons.
-# Off until overscan subtraction is added (the bias level drifts ~20-40 ADU by the science frames).
-cr_clean = false
+# Cosmic-ray cleaning of the 2D science frames (L.A.Cosmic); readnoise in electrons
+cr_clean = true
 readnoise = 5.7
 cr_sigclip = 4.5
 
