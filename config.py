@@ -42,8 +42,8 @@ DEFAULTS = {
     },
     "steps": {
         "reduce": True, # Calibrate, trace, extract and wavelength-calibrate each frame
-        "normalize": True, # Continuum-normalize each frame
-        "combine": True, # Median-combine the normalized frames
+        "combine": True, # Scale and median-combine the extracted frames
+        "normalize": True, # Continuum-normalize the combined spectrum (optional)
         "fit_lines": False, # Velocity and metal-line fits on the combined spectrum
     },
     "detector": {
@@ -74,13 +74,21 @@ DEFAULTS = {
         "sigclip": 4.5, # Detection threshold in sigma
     },
     "normalization": {
-        "line_width": 250, # Half-width (pixels) of the local line fit at each point
-        "boxcar": 70, # Boxcar (pixels) used to smooth the fitted continuum
-        "clip": None, # Mask normalized flux >= this (default: no masking)
+        # Optional: fit a continuum to the combined spectrum and divide by it
+        # (a cubic spline with asymmetric sigma clipping; see normalize.py).
+        "knot_spacing": 150.0, # A between spline knots; must exceed the widest masked region
+        "low_reject": 2.0, # Leave out pixels more than this many sigma below the continuum
+        "high_reject": 3.0, # ... or this many sigma above it
+        "mask": "default", # Regions left out of the fit: "default" (calib_data/masks/stellar.txt),
+                           # "none", or a file with columns center, half-width (A)
+        "extra_mask": [], # More regions to leave out: [[lam_min, lam_max], ...]
+        "clip": None, # Flag (Mask bit 1) normalized flux above this (default: no flag)
+        "clip_regions": [], # [[lam_min, lam_max, threshold], ...]: flag normalized flux above threshold there
     },
     "combine": {
-        "clip": None, # Mask combined flux > this (default: no masking)
-        "clip_regions": [], # [[lam_min, lam_max, threshold], ...]: mask flux above threshold there
+        "scale": "smooth", # Scale frames to the best one: "smooth" (polynomial in wavelength),
+                           # "median" (one factor), or "none"
+        "scale_order": 2, # Polynomial order for scale = "smooth"
         "jackknife": False, # Also report S/N with each frame left out
     },
     "lines": {
@@ -146,6 +154,10 @@ def merge(user):
             if value is REQUIRED:
                 raise ConfigError(f"[{section}] {key} is required")
 
+    if cfg["combine"]["scale"] not in ("smooth", "median", "none"):
+        raise ConfigError('[combine] scale should be "smooth", "median" or "none"')
+    if cfg["steps"]["fit_lines"] and not cfg["steps"]["normalize"]:
+        raise ConfigError("[steps] fit_lines works on the normalized spectrum: set normalize = true")
     if cfg["extraction"]["method"] not in ("optimal", "boxcar"):
         raise ConfigError('[extraction] method should be "optimal" or "boxcar"')
 

@@ -64,10 +64,6 @@ def run_group(cfg, group):
     """Reduce one object/setup group. Returns its sci_modules instance."""
     steps = cfg["steps"]
     verbose = cfg["output"]["verbose"]
-    if not steps["reduce"] and steps["normalize"]:
-        raise ConfigError("[steps] normalize needs reduce = true in the same run "
-                          "(reduced spectra are not reloaded from disk yet)")
-
     target_dir = os.path.join(cfg["paths"]["output_dir"], group.out_name) + "/"
     os.makedirs(target_dir + "OUT", exist_ok=True) # Finalized outputs
     write_run_info(cfg, group, target_dir)
@@ -82,14 +78,15 @@ def run_group(cfg, group):
         for scinum in scinums:
             sci_mods.reduce_image(scinum, masterbias, final_flat, verbose)
 
-    if steps["normalize"]:
-        for scinum in scinums:
-            sci_mods.normalization(scinum, verbose)
-
-    # Median-combine the normalized spectra OUT/<objid>_<n>_OUT.fits of this group's frames
+    # Scale and median-combine the extracted spectra OUT/<objid>_<n>_extracted.fits
+    # (read from disk, so this also works on an earlier run's output)
     sci_mods.snr = None
     if steps["combine"]:
         sci_mods.snr = sci_mods.combine_spectra(scinums, verbose, jackknife=cfg["combine"]["jackknife"])
+
+    # Optional: continuum-normalize the combined spectrum (OUT/<objid>_combined.fits)
+    if steps["normalize"]:
+        sci_mods.normalize_combined(verbose)
 
     if steps["fit_lines"]:
         radial_vel = sci_tools.fit_vel_lines(sci_mods.gwave, sci_mods.med_comb, graph)

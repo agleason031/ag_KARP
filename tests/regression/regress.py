@@ -104,22 +104,22 @@ def snapshot(sm, out_dir):
         snap[f"sky_raw_{n}"] = np.asarray(sm.sky_raw_dict[n])
         snap[f"err_raw_{n}"] = np.asarray(sm.err_dict[n])
         snap[f"wavelengths_{n}"] = np.asarray(sm.wavelengths_dict[n])
-        out = out_dir / "OUT" / f"{sm.objid}_{n}_OUT.fits"
-        if out.exists():
-            t = Table.read(out)
-            snap[f"norm_lam_{n}"] = np.asarray(t["Lam"])
-            snap[f"norm_flux_{n}"] = np.asarray(t["Flux"])
-            snap[f"norm_sigma_{n}"] = np.asarray(t["Sigma"])
-            if "Mask" in t.colnames:
-                snap[f"norm_mask_{n}"] = np.asarray(t["Mask"])
 
-    snap["comb_lam"] = np.asarray(sm.gwave)
-    snap["comb_flux"] = np.asarray(sm.med_comb)
-    snap["comb_sigma"] = np.asarray(sm.sig_final)
-    if hasattr(sm, "comb_mask"):
+    # Combined spectrum (not normalized)
+    if sm.comb_flux is not None:
+        snap["comb_lam"] = np.asarray(sm.comb_wave)
+        snap["comb_flux"] = np.asarray(sm.comb_flux)
+        snap["comb_sigma"] = np.asarray(sm.comb_sigma)
         snap["comb_mask"] = np.asarray(sm.comb_mask)
+    # Normalized combined spectrum (optional step)
+    if getattr(sm, "continuum", None) is not None:
+        snap["norm_lam"] = np.asarray(sm.gwave)
+        snap["norm_flux"] = np.asarray(sm.med_comb)
+        snap["norm_sigma"] = np.asarray(sm.sig_final)
+        snap["norm_continuum"] = np.asarray(sm.continuum)
+        snap["norm_contfit"] = np.asarray(sm.cont_used, dtype=np.int16)
+        snap["norm_mask"] = np.asarray(sm.norm_mask_out)
     snap["snr"] = np.array([sm.snr if sm.snr is not None else np.nan])
-    snap["snr_rms"] = np.array([getattr(sm, "snr_rms", np.nan)])
     return snap
 
 
@@ -139,7 +139,6 @@ def git_info():
 # (wavelength key, value keys) pairs compared on the reference wavelength grid
 SPECTRA = [
     ("wavelengths_{n}", ["flux_raw_{n}", "sky_raw_{n}", "err_raw_{n}"]),
-    ("norm_lam_{n}", ["norm_flux_{n}", "norm_sigma_{n}"]),
 ]
 
 
@@ -205,7 +204,8 @@ def compare(ref, new):
     print("\nSpectra resampled onto the reference wavelength grid:")
     nums = sorted({k.rsplit("_", 1)[1] for k in ref if k.startswith("cen_line_")})
     pairs = [(lk.format(n=n), vk.format(n=n)) for n in nums for lk, vks in SPECTRA for vk in vks]
-    pairs += [("comb_lam", "comb_flux"), ("comb_lam", "comb_sigma")]
+    pairs += [("comb_lam", "comb_flux"), ("comb_lam", "comb_sigma"),
+              ("norm_lam", "norm_flux"), ("norm_lam", "norm_sigma"), ("norm_lam", "norm_continuum")]
     for lk, vk in pairs:
         if all(x in ref and x in new for x in (lk, vk)):
             print(f"  {vk:<{width}}  {spectrum_diff(ref[lk], ref[vk], new[lk], new[vk])}")

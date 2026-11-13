@@ -24,13 +24,6 @@ def residuals(p, x, y):
         res[i] = G(x[i], a, mu, sigma, bck) - y[i]
     return res
 
-# Our continuum function:
-@njit
-def con_lam(wave, params):
-    aa,bb,cc,dd,ee,ff,gg = params
-    # flux as a function of wavelength
-    return (aa*(wave)**6)+(bb*(wave)**5)+(cc*wave**4)+(dd*wave**3)+(ee*wave**2)+(ff*wave)+gg
-
 def fit_cent_gaussian(x_vals, y_vals, y_bck, clr):
     if x_vals is None:
         return [np.nan, np.nan, np.nan, np.nan]

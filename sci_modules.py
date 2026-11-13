@@ -6,7 +6,6 @@ Created on Wed Jun  4 15:52:33 2025
 @author: agleason
 """
 from tqdm import tqdm
-from scipy.ndimage import uniform_filter
 from scipy.interpolate import interp1d
 from astropy.nddata import CCDData
 from astropy.table import Table
@@ -14,10 +13,10 @@ from astropy.stats import mad_std
 from numpy.polynomial import Polynomial
 from functions import fit_cent_gaussian, build_fit_args
 from extract import extract, variance_image
-from functions import con_lam
 import wavecal
 from wavecal import C_KMS
-from sci_tools import heliocentric_correction, fit_all_fluxes, detector_geometry, read_reduced
+from normalize import fit_continuum, load_mask
+from sci_tools import heliocentric_correction, detector_geometry, read_reduced
 from joblib import Parallel, delayed
 import ccdproc
 import os
@@ -61,24 +60,29 @@ class sci_modules:
         self.trace_order = cfg["trace"]["order"] # Polynomial order of the trace fit
         self.trace_col = cfg["trace"]["col"] # Optional starting column for the trace; found automatically if None
         norm = cfg["normalization"]
-        self.norm_line_width = norm["line_width"]  # When normalizing spectra, this is the one-half width of the line KARP will try and fit at each point
-        self.norm_line_boxcar = norm["boxcar"] # When normalizing the spectra, the boxcar used to smooth the continuum
+        self.knot_spacing = norm["knot_spacing"] # A between continuum spline knots
+        self.low_reject = norm["low_reject"] # continuum clipping below the fit, sigma
+        self.high_reject = norm["high_reject"] # continuum clipping above the fit, sigma
+        self.norm_mask = norm["mask"] # "default", "none", or a mask file
+        self.norm_extra_mask = norm["extra_mask"] # extra [lam_min, lam_max] regions left out of the fit
         # Cosmic-ray cleaning of the 2D science frames (L.A.Cosmic)
         self.cr_clean = cfg["cosmic_rays"]["enabled"]
         self.cr_sigclip = cfg["cosmic_rays"]["sigclip"] # detection threshold in sigma
         self.readnoise = cfg["detector"]["readnoise"] # electrons
         self.full_well = cfg["detector"]["full_well"] # electrons
-        # Optional masking thresholds (None = off). Masked pixels keep their
-        # value but get a nonzero Mask flag in the output tables.
-        self.norm_clip = norm["clip"] # normalized flux >= this is masked, per frame
-        self.comb_clip = cfg["combine"]["clip"] # combined flux > this is masked
-        # List of [lam_min, lam_max, threshold]: combined flux above threshold in that range is masked
-        self.comb_clip_regions = cfg["combine"]["clip_regions"]
+        # Optional flags on the normalized spectrum (None / empty = off). Flagged pixels
+        # keep their value but get Mask bit 1 in the output.
+        self.norm_clip = norm["clip"] # normalized flux > this
+        self.norm_clip_regions = norm["clip_regions"] # [[lam_min, lam_max, threshold], ...]
+        # Combining frames
+        self.comb_scale = cfg["combine"]["scale"] # "smooth", "median" or "none"
+        self.comb_scale_order = cfg["combine"]["scale_order"]
         # Heliocentric correction inputs: coordinates from headers unless overridden
         self.target_ra = cfg["target"]["ra"]
         self.target_dec = cfg["target"]["dec"]
         self.site_height = cfg["target"]["site_height"]
-        self.gwave = []
+        self.comb_flux = None # combined spectrum (set by combine_spectra)
+        self.gwave = [] # normalized combined spectrum (set by normalize_combined)
         self.med_comb = []
         self.sig_final = []
         
@@ -328,160 +332,18 @@ class sci_modules:
 
 #-----------------------------------------
 
-    def normalization(self, scinum, verbose):
-        # Mask out deep absorption features
-        # Deep features in order of ascending wavelength, in angstroms
-        # We have spectra down to Lam = 3780 and up to 6600 angstroms
-        # H_8,H_eta, H_zeta,Ca_K,Ca_H, H_epsilon,H_delta,H_gamma, H_beta, SodiumD2, SodiumD1, H_alpha
-        features = [3796.94,3835.40,3889.06,3933.7,3969,3970.075,4101.73,4340.47,4861.35,5889.96,5895.93,6562.81]
-        
-        flux_raw_cor1 = list(self.flux_raw_cor1_dict[scinum])
-        wavelengths = list(self.wavelengths_dict[scinum])
-        err_raw1 = list(self.err_dict[scinum])
-        
-        # Remove 4 pixels from either edge to ensure bad chip pixels aren't affecting our fits
-        flux_raw_cor1 = flux_raw_cor1[3:-4]
-        wavelengths = wavelengths[3:-4]
-        err_raw1 = err_raw1[3:-4]
-        flux_masked = np.array(flux_raw_cor1.copy()) # Create a copy so we can still use flux_raw_cor1
-        flux_raw_cor1_np = np.array(flux_raw_cor1, dtype=float)
-        wavelengths_np = np.array(wavelengths, dtype=float)
-        err_raw1 = np.array(err_raw1)
-        
-        print(f"Estimating continuum on {scinum}")
-        # Make each line have its own feature mask width to get a good mask
-        # H_8,H_eta, H_zeta,Ca_K,Ca_H, H_epsilon,H_delta,H_gama, H_beta, SodiumD2, SodiumD1, H_alpha
-        
-        # Wide features, for bright spectra
-        feature_mask = [10,15,19,10,10,35,40,60,60,10,15,30]
-    
-        for i in range(len(features)):
-            # Find pixel index closest to the feature wavelength
-            wavelengths = np.array(wavelengths)
-            # use np.argmin to get the closest pixel value to our feature
-            center = np.argmin(np.abs(wavelengths - features[i])) # argmin so we round to the closest indexed value, not skipping over wavelengths that we have pixels for
-            # Get the maximum and minimum values (up to 40 pix away from center)
-            start = max(0, center - feature_mask[i]) # Not 40 pixels, 40*1/*0.7 Ang/pix so like 57
-            stop = min(len(flux_masked), center + feature_mask[i])
-            flux_masked[start:stop] = np.nan
-        
-        # Fit a fourth degree polynomial to the continuum estimate
-        flux_mask_red = []
-        lam_red = []
-        flux_mask_remove = []
-        lam_remove = []
-        removed_index = [] # 0 is keep and 1 is remove
-        # reduce the flux for a better fit
-        for i in range(len(flux_masked)):
-            if np.isnan(flux_masked[i]) != True:
-                # Pixels we want to keep
-                flux_mask_red.append(flux_masked[i])
-                lam_red.append(wavelengths[i])
-                removed_index.append(0) # The index values of the pixels that we keep for fitting later
-            else:
-                # Pixels that we take out
-                flux_mask_remove.append(flux_raw_cor1[i])
-                removed_index.append(1) # The index values of the pixels that we remove for fitting later
-                lam_remove.append(wavelengths[i])
-        
-        # Fit a continuum to out spectra:
-        fit_params = np.polyfit(lam_red,flux_mask_red,6)    
-        Fnorm_Es = flux_raw_cor1_np / con_lam(wavelengths_np, fit_params) # Divide raw flux by our continuum that we just fit
-        
-        # Plot our first estimate on the normalized flux
-        if (verbose == True):
-            con_lam_test = []
-            for i in range(len(wavelengths)):
-                con_lam_test.append(con_lam(wavelengths_np[i], fit_params)) 
-            self.grapher.plot_sci_flux_norm_est(wavelengths, Fnorm_Es, scinum)
-            self.grapher.plot_sci_flux_masked(lam_red, lam_remove, flux_mask_red, flux_mask_remove, wavelengths, con_lam_test, scinum)
-        
-        print("Line-fit normilization")
-        removed_index = np.array(removed_index)
-        
-        fitted_values = []
-        fitted_wavelengths = []
-        fitted_err = []
-        fitted_fluxes = []
-        
-        flux_masked_global = flux_raw_cor1_np.copy()
-        for i, feat in enumerate(features):
-            center = np.argmin(np.abs(wavelengths_np - feat)) # Use argmin to get the index of the minimum value of all_wavelengths-all_features, (i.e. where the center of each feature is)
-            start = max(0, center - feature_mask[i]) # From the center out to our feature mask size, start as far out from the edge as we can
-            stop = min(len(flux_masked_global), center + feature_mask[i]) # From the center out to our feature mask size,  start as close to the edge as we can
-            flux_masked_global[start:stop] = np.nan # Mask absorption lines with NANs
-        
-        lam_reda = [] # Kept flux values that do not have Fnorm_es > 1.3
-        flux_mask_reda = []
-        lam_removea = [] # Removed flux values that do not have Fnorm_es > 1.3
-        flux_mask_removea = []
-        
-        rm_param = 1.3
-        include = Fnorm_Es <= rm_param
-        
-        results = fit_all_fluxes(Fnorm_Es, wavelengths_np, flux_masked, include, removed_index,
-                           flux_raw_cor1_np, flux_masked_global, err_raw1, self.norm_line_width)
-        for row in results:        
-            if np.isnan(row[0]):
-                continue
-            else:
-                val, err, flux, wave, f_keep, f_remove, l_keep, l_remove = row
-                fitted_values.append(val)
-                fitted_err.append(err)
-                fitted_fluxes.append(flux)
-                fitted_wavelengths.append(wave)
-                if f_keep is not None:
-                    flux_mask_reda.append(f_keep)
-                    lam_reda.append(l_keep)
-                if f_remove is not None:
-                    flux_mask_removea.append(f_remove)
-                    lam_removea.append(l_remove)
-            
-        # Now smooth this fit with a moving boxcar
-        smooth_cont = uniform_filter(np.array(fitted_values), size=self.norm_line_boxcar)
-        
-        # Plot fitted flux values from the line fit to see what is going on
-        self.grapher.plot_fit_over_flux(fitted_wavelengths, smooth_cont, fitted_values, fitted_fluxes, lam_removea, flux_mask_removea, lam_red, lam_remove, flux_mask_red, flux_mask_remove, lam_reda, flux_mask_reda, scinum)
-                
-        Fnorm = np.array(fitted_fluxes) / smooth_cont # Divide raw flux by our continuum that we just fit
-
-        # Flag (don't overwrite) pixels above the optional threshold
-        mask = np.zeros(len(Fnorm), dtype=np.int16) # 0 = good, 1 = above norm_clip
-        if self.norm_clip is not None:
-            flagged = Fnorm >= self.norm_clip
-            mask[flagged] = 1
-            print(f"Masked {int(flagged.sum())} pixels with normalized flux >= {self.norm_clip} in image {scinum}")
-            if verbose:
-                print("Masked values:", Fnorm[flagged])
-
-        sf_sm = np.array(fitted_err) / smooth_cont # Extraction error, normalized
-        
-        # S/N per pixel of this frame, from the propagated errors
-        fw = np.asarray(fitted_wavelengths)
-        good = mask == 0
-        win = good & (fw >= 5450) & (fw <= 5550)
-        msg = (f"Image {scinum} normalized: S/N per pixel {np.median(Fnorm[good] / sf_sm[good]):.1f} (median), "
-               f"{np.median(Fnorm[win] / sf_sm[win]) if win.any() else np.nan:.1f} at 5450-5550 A")
-        print(msg)
-        with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-            f.write(msg + "\n")
-        
-        if (verbose == True):
-            print("Plotting Normalized Spectra")
-            self.grapher.plot_sci_normalized(fitted_wavelengths, Fnorm, sf_sm, scinum)
-        
-        # Write a file for the spectra of this sci image
-        # In the form G123456_61_OUT.fits in the OUT folder
-        t = Table([fitted_wavelengths,Fnorm,sf_sm,mask], names=('Lam', "Flux", "Sigma", "Mask"))
-        t.write(self.target_dir+"OUT/"+str(self.objid)+"_"+str(scinum)+"_OUT.fits", format='fits', overwrite=True)
-
-#---------------------------------------------
-    
     def combine_spectra(self, scinums, verbose, jackknife=False):
         """
-        Median-combine the normalized spectra of the given science images
-        (OUT/{objid}_{n}_OUT.fits) on the wavelength grid of the first one, with errors
-        propagated from the per-frame errors, and write OUT/{objid}_combined.fits.
+        Combine the extracted spectra of the given science images
+        (OUT/{objid}_{n}_extracted.fits) and write OUT/{objid}_combined.fits.
+
+        Each frame is interpolated onto the wavelength grid of the frame with the
+        highest S/N (the reference) and scaled to it: by a smooth function of
+        wavelength (scale = "smooth", a polynomial of order scale_order fit to the
+        flux ratio with clipping), a single factor ("median"), or not at all ("none").
+        The scaled frames are median-combined; the error is that of the inverse-
+        variance mean of the frames used, times the median/mean noise factor.
+        Flux is in electrons per pixel, on the reference frame's scale.
         Returns the S/N at 5500 A: the median of Flux/Sigma over 5450-5550 A.
         With jackknife=True, also report the S/N with each image left out in turn.
         """
@@ -495,107 +357,177 @@ class sci_modules:
             fo.write("KARP is combining spectra\n")
 
         # Only this object's spectra for the requested images
-        file_names = [f"{self.target_dir}OUT/{self.objid}_{n}_OUT.fits" for n in scinums]
-        missing = [f for f in file_names if not os.path.exists(f)]
+        file_names = {n: f"{self.target_dir}OUT/{self.objid}_{n}_extracted.fits" for n in scinums}
+        missing = [f for f in file_names.values() if not os.path.exists(f)]
         if missing:
-            raise FileNotFoundError(f"Normalized spectra not found (run with normalize = true first): {missing}")
+            raise FileNotFoundError(f"Extracted spectra not found (run with reduce = true first): {missing}")
+        frames = {}
+        for n, fname in file_names.items():
+            t = Table.read(fname)
+            frames[n] = (np.asarray(t["Lam"], dtype=float), np.asarray(t["Flux"], dtype=float),
+                         np.asarray(t["Sigma"], dtype=float))
         if (verbose == True):
-            log("Using these file names: " + str(file_names))
+            log("Using these file names: " + str(list(file_names.values())))
 
-        # Use wavelength grid from first file
-        gwave = np.asarray(Table.read(file_names[0])["Lam"])
+        # Reference: the frame with the highest median S/N; its wavelength grid is used
+        frame_snr = {n: float(np.nanmedian(f / s)) for n, (_, f, s) in frames.items()}
+        ref = max(frame_snr, key=frame_snr.get)
+        gwave = frames[ref][0]
+        log("Frame S/N per pixel (median): " + ", ".join(f"{n}: {v:.1f}" for n, v in frame_snr.items())
+            + f"; reference frame {ref}")
 
-        def combine(files):
-            """
-            Median-combine `files` on gwave. Returns (med_comb, sig_comb, comb_mask).
-            comb_mask bits: 1 = above a comb_clip threshold, 2 = no unmasked data.
-            """
-            # Interpolate onto reference grid; masked pixels are left out of the median
-            gflux_interp = []
-            gsig = []
-            for fname in files:
-                t = Table.read(fname)
-                flux = np.array(t["Flux"], dtype=float)
-                if "Mask" in t.colnames:
-                    flux[np.asarray(t["Mask"]) != 0] = np.nan
-                f = interp1d(t["Lam"], flux, bounds_error=False, fill_value=np.nan)
-                s = interp1d(t["Lam"], t["Sigma"], bounds_error=False, fill_value=np.nan)
-                gflux_interp.append(f(gwave))
-                gsig.append(s(gwave))
-            gflux = np.array(gflux_interp)
-            gsig = np.where(np.isfinite(gflux), np.array(gsig), np.nan) # errors only where flux is used
+        # Interpolate every frame onto the grid
+        on_grid = {}
+        for n, (lam, f, s) in frames.items():
+            fi = interp1d(lam, f, bounds_error=False, fill_value=np.nan)(gwave)
+            si = interp1d(lam, s, bounds_error=False, fill_value=np.nan)(gwave)
+            on_grid[n] = (fi, si)
 
-            # Stack and take median, ignoring NaNs
+        # Scale each frame to the reference
+        ref_f = on_grid[ref][0]
+        x = (gwave - gwave.mean()) / (np.ptp(gwave) / 2) # scaled wavelength for a well-conditioned fit
+        for n, (fi, si) in on_grid.items():
+            if n == ref or self.comb_scale == "none":
+                continue
+            ratio = ref_f / fi
+            ok = np.isfinite(ratio) & (fi > 0) & (ref_f > 0)
+            if self.comb_scale == "median":
+                scale = np.full(len(gwave), np.median(ratio[ok]))
+            else: # smooth
+                use = ok.copy()
+                for _ in range(10):
+                    coef = np.polyfit(x[use], ratio[use], self.comb_scale_order)
+                    resid = ratio - np.polyval(coef, x)
+                    new_use = ok & (np.abs(resid) < 3 * mad_std(resid[use]))
+                    if np.array_equal(new_use, use):
+                        break
+                    use = new_use
+                scale = np.polyval(coef, x)
+            on_grid[n] = (fi * scale, si * scale)
+            log(f"Frame {n} scaled to frame {ref}: factor {np.nanmedian(scale):.4f} (median), "
+                f"range {np.nanmin(scale):.4f}-{np.nanmax(scale):.4f}")
+
+        def combine(nums):
+            """Median-combine frames `nums` on gwave. Returns (flux, sigma, mask)."""
+            gflux = np.array([on_grid[n][0] for n in nums])
+            gsig = np.array([on_grid[n][1] for n in nums])
+            gsig = np.where(np.isfinite(gflux), gsig, np.nan) # errors only where flux is used
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning) # All-NaN columns are flagged below
-                med_comb = np.nanmedian(gflux, axis=0)
-
-            # Error of the combined spectrum: the error of the inverse-variance mean of the
-            # frames used, times how much noisier a median of that many values is than a mean
+                med = np.nanmedian(gflux, axis=0)
+            # Error: that of the inverse-variance mean of the frames used, times how much
+            # noisier a median of that many values is than a mean
             n_used = np.sum(np.isfinite(gflux) & (gsig > 0), axis=0)
             inv_var = np.where(gsig > 0, 1.0 / gsig**2, 0.0)
             with np.errstate(divide="ignore"):
-                sig_mean = np.sqrt(1.0 / np.sum(inv_var, axis=0)) # inf where no frame has data
-            sig_comb = sig_mean * median_error_factor(n_used)
+                sig = np.sqrt(1.0 / np.sum(inv_var, axis=0)) * median_error_factor(n_used)
+            mask = np.zeros(len(gwave), dtype=np.int16)
+            mask[np.isnan(med) | ~np.isfinite(sig)] |= 2 # 2 = no data
+            return med, sig, mask
 
-            # Flag (don't overwrite) values above the optional thresholds,
-            # e.g. the zeroth order or remaining bad pixels
-            comb_mask = np.zeros(len(gwave), dtype=np.int16)
-            with np.errstate(invalid="ignore"):
-                if self.comb_clip is not None:
-                    comb_mask[med_comb > self.comb_clip] |= 1
-                for lam_min, lam_max, threshold in self.comb_clip_regions:
-                    comb_mask[(gwave >= lam_min) & (gwave <= lam_max) & (med_comb > threshold)] |= 1
-            comb_mask[np.isnan(med_comb) | ~np.isfinite(sig_comb)] |= 2
-            return med_comb, sig_comb, comb_mask
-
-        def snr_in(med_comb, sig_comb, comb_mask, lam_min, lam_max):
+        def snr_in(flux, sig, mask, lam_min, lam_max):
             """Median Flux/Sigma of unmasked pixels in a wavelength range (NaN if none)."""
-            m = (gwave >= lam_min) & (gwave <= lam_max) & (comb_mask == 0)
-            return float(np.median(med_comb[m] / sig_comb[m])) if m.any() else np.nan
+            m = (gwave >= lam_min) & (gwave <= lam_max) & (mask == 0)
+            return float(np.median(flux[m] / sig[m])) if m.any() else np.nan
 
+        nums = list(frames)
         if jackknife == True:
-            # Leave out each file in turn and report the S/N, for comparison only
-            for i in range(len(file_names)):
-                selected_files = [f for j, f in enumerate(file_names) if j != i]
-                med_i, sig_i, mask_i = combine(selected_files)
-                log(f"S/N at 5500 A: {snr_in(med_i, sig_i, mask_i, 5450, 5550):.1f} with files {selected_files}")
+            # Leave out each frame in turn and report the S/N, for comparison only
+            for leave in nums:
+                rest = [n for n in nums if n != leave]
+                f_i, s_i, m_i = combine(rest)
+                log(f"S/N at 5500 A: {snr_in(f_i, s_i, m_i, 5450, 5550):.1f} without frame {leave}")
 
-        # The combined spectrum always uses all files
-        med_comb, sig_final, comb_mask = combine(file_names)
+        # The combined spectrum always uses all frames
+        comb_flux, comb_sig, comb_mask = combine(nums)
 
         # S/N per pixel from the propagated errors, around several wavelengths
-        snr5500 = snr_in(med_comb, sig_final, comb_mask, 5450, 5550)
-        bands = {lam: snr_in(med_comb, sig_final, comb_mask, lam - 50, lam + 50)
+        snr5500 = snr_in(comb_flux, comb_sig, comb_mask, 5450, 5550)
+        bands = {lam: snr_in(comb_flux, comb_sig, comb_mask, lam - 50, lam + 50)
                  for lam in range(4000, 10000, 500)}
         bands = {lam: v for lam, v in bands.items() if np.isfinite(v)}
         log(f"S/N per pixel at 5500 A (median Flux/Sigma, 5450-5550 A): {snr5500:.1f}")
         log("S/N per pixel by wavelength: " + ", ".join(f"{lam} A: {v:.0f}" for lam, v in bands.items()))
-        # Scatter-based check (the old measure): 1/RMS about 1 in 5450-5550 A. It also responds
-        # to continuum placement and real spectral features, so it is a diagnostic only.
-        m = (gwave >= 5450) & (gwave <= 5550) & (comb_mask == 0)
-        snr_rms = 1 / np.sqrt(np.mean((1 - med_comb[m])**2)) if m.any() else np.nan
-        log(f"Scatter-based S/N in 5450-5550 A (diagnostic): {snr_rms:.1f}")
 
         # Write the combined spectrum
         out_path = f"{self.target_dir}OUT/{self.objid}_combined.fits"
-        t = Table([gwave, med_comb, sig_final, comb_mask], names=("Lam", "Flux", "Sigma", "Mask"))
+        t = Table([gwave, comb_flux, comb_sig, comb_mask], names=("Lam", "Flux", "Sigma", "Mask"))
+        t["Lam"].unit = "Angstrom"
+        t["Flux"].unit = t["Sigma"].unit = "electron"
         t.meta["SCINUMS"] = ",".join(str(n) for n in scinums)
+        t.meta["REFFRAME"] = (ref, "frames scaled to this one")
+        t.meta["SCALE"] = (self.comb_scale, "frame scaling method")
         t.meta["SNR5500"] = (snr5500, "median Flux/Sigma, 5450-5550 A")
-        t.meta["SNRRMS"] = (snr_rms, "1/RMS about 1, 5450-5550 A (diagnostic)")
         t.write(out_path, format="fits", overwrite=True)
         print("Combined spectrum written to", out_path)
+        self.grapher.plot_combined(gwave, comb_flux, comb_sig, snr5500)
 
-        self.grapher.plot_combined_norm(gwave, med_comb, sig_final, snr5500)
-
-        self.gwave = gwave
-        self.med_comb = med_comb
-        self.sig_final = sig_final
+        self.comb_wave = gwave
+        self.comb_flux = comb_flux
+        self.comb_sigma = comb_sig
         self.comb_mask = comb_mask
         self.snr_bands = bands
-        self.snr_rms = snr_rms
-
         return snr5500
+
+    def normalize_combined(self, verbose):
+        """
+        Continuum-normalize the combined spectrum (OUT/{objid}_combined.fits, read from
+        disk if this run didn't combine) and write OUT/{objid}_normalized.fits with
+        Flux and Sigma divided by the continuum, the Continuum itself, Mask, and
+        ContFit (1 = pixel used in the continuum fit). Optional step.
+        """
+        if getattr(self, "comb_flux", None) is None:
+            path = f"{self.target_dir}OUT/{self.objid}_combined.fits"
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"Combined spectrum not found (run with combine = true first): {path}")
+            t = Table.read(path)
+            self.comb_wave = np.asarray(t["Lam"], dtype=float)
+            self.comb_flux = np.asarray(t["Flux"], dtype=float)
+            self.comb_sigma = np.asarray(t["Sigma"], dtype=float)
+            self.comb_mask = np.asarray(t["Mask"])
+        lam, flux, sig, mask = self.comb_wave, self.comb_flux, self.comb_sigma, self.comb_mask.copy()
+
+        print("Fitting the continuum")
+        regions = load_mask(self.norm_mask)
+        if len(self.norm_extra_mask):
+            regions = np.vstack([regions, np.array(self.norm_extra_mask, dtype=float).reshape(-1, 2)])
+        cont, used, notes = fit_continuum(lam, flux, sig, mask != 0, regions,
+                                          knot_spacing=self.knot_spacing, low_reject=self.low_reject,
+                                          high_reject=self.high_reject)
+        norm_flux = flux / cont
+        norm_sig = sig / cont
+
+        # Optional flags on normalized flux (they don't change any values)
+        with np.errstate(invalid="ignore"):
+            if self.norm_clip is not None:
+                mask[norm_flux > self.norm_clip] |= 1
+            for lam_min, lam_max, threshold in self.norm_clip_regions:
+                mask[(lam >= lam_min) & (lam <= lam_max) & (norm_flux > threshold)] |= 1
+        msg = "Continuum: " + "; ".join(notes)
+        if self.norm_clip is not None or len(self.norm_clip_regions):
+            msg += f"; {int(((mask & 1) != 0).sum())} pixels flagged above the clip thresholds"
+        print(msg)
+        with open(self.target_dir+"OUT/KARP_OUT_log.txt", "a") as fo:
+            fo.write(msg + "\n")
+
+        t = Table([lam, norm_flux, norm_sig, cont, mask, used.astype(np.int16)],
+                  names=("Lam", "Flux", "Sigma", "Continuum", "Mask", "ContFit"))
+        t["Lam"].unit = "Angstrom"
+        t["Continuum"].unit = "electron"
+        t.meta["KNOTSPAC"] = (self.knot_spacing, "continuum spline knot spacing, A")
+        t.meta["LOWREJ"] = (self.low_reject, "continuum clipping below, sigma")
+        t.meta["HIGHREJ"] = (self.high_reject, "continuum clipping above, sigma")
+        t.write(f"{self.target_dir}OUT/{self.objid}_normalized.fits", format="fits", overwrite=True)
+        self.grapher.plot_continuum(lam, flux, cont, used, regions)
+        self.grapher.plot_normalized(lam, norm_flux, norm_sig)
+
+        # Normalized spectrum for the line fits (fit_lines)
+        self.gwave = lam
+        self.med_comb = norm_flux
+        self.sig_final = norm_sig
+        self.norm_mask_out = mask
+        self.continuum = cont
+        self.cont_used = used
     
 #-----------------------------------------
     

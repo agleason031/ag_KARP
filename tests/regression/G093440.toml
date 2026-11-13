@@ -9,8 +9,8 @@ output_dir = "tests/regression/runs/unset"
 
 [steps]
 reduce = true
-normalize = true
 combine = true
+normalize = true
 fit_lines = false
 
 [detector]
@@ -38,11 +38,16 @@ enabled = true
 sigclip = 4.5
 
 [normalization]
-line_width = 250
-boxcar = 70
+knot_spacing = 150.0
+low_reject = 2.0
+high_reject = 3.0
+mask = "default"
+extra_mask = []
+clip_regions = []
 
 [combine]
-clip_regions = []
+scale = "smooth"
+scale_order = 2
 jackknife = false
 
 [wavecal]

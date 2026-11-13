@@ -14,7 +14,6 @@ from astropy import units as u
 from astropy.stats import mad_std
 from astropy.nddata import CCDData
 from functions import G
-from numba import njit, prange
 from numpy.polynomial import Chebyshev
 import numpy as np
 import ccdproc
@@ -312,73 +311,3 @@ def fit_vel_lines(gwave, med_comb, grapher):
     print("Radial velocity:",radial_vel,"+/-", radial_vel_err)        
     # Look for HI line, 4471.5
     return radial_vel
-    
-@njit
-def fit_flux(i, Fnorm_Es, wavelengths_np, flux_masked, include, removed_index,
-    flux_raw_cor1_np, flux_masked_global, sky_raw1, norm_line_width, rm_param=1.3):
-    
-    if Fnorm_Es[i] > rm_param:
-        return np.full(8, np.nan)  # Skip
-
-    lam_left = max(0, i - norm_line_width)
-    lam_right = min(len(wavelengths_np), i + norm_line_width)
-    
-    wavelength = wavelengths_np[i]
-    sky = sky_raw1[i]
-    flux = flux_raw_cor1_np[i]
-
-    wave_range = []
-    flux_values = []
-    if removed_index[i] == 0:
-        # Build boolean mask
-        for k in range(lam_left, lam_right):
-            if include[k] and removed_index[k] == 0:
-                wave_range.append(wavelengths_np[k])
-                flux_values.append(flux_raw_cor1_np[k])
-        if len(wave_range) < 2:
-            return np.full(8, np.nan)
-        #Linear fit
-        ml, bl = linear_fit_numba(np.array(wave_range), np.array(flux_values))
-    else:
-        for k in range(lam_left, lam_right):
-            val = flux_masked_global[k]
-            if not np.isnan(val):
-                wave_range.append(wavelengths_np[k])
-                flux_values.append(val)
-        if len(wave_range) < 2:
-            return np.full(8, np.nan)
-        ml, bl = linear_fit_numba(np.array(wave_range), np.array(flux_values))
-        
-    fitted_value = ml * wavelength + bl
-    flux_m = flux_masked[i]
-    
-    if not np.isnan(flux_m):
-        return np.array([fitted_value, sky, flux, wavelength, flux_m, np.nan, wavelength, np.nan])
-    else:
-        return np.array([fitted_value, sky, flux, wavelength, np.nan, flux, np.nan, wavelength])
-
-@njit
-def fit_all_fluxes(Fnorm_Es, wavelengths_np, flux_masked, include, removed_index,
-                   flux_raw_cor1_np, flux_masked_global, sky_raw1, norm_line_width):
-    n = len(Fnorm_Es)
-    results = np.full((n, 8), np.nan)
-    for i in prange(n):
-        results[i] = fit_flux(i, Fnorm_Es, wavelengths_np, flux_masked, include, removed_index,
-                                    flux_raw_cor1_np, flux_masked_global, sky_raw1, norm_line_width)
-    return results
-
-@njit
-def linear_fit_numba(x, y):
-    n = len(x)
-    if n < 2:
-        return np.nan, np.nan
-    sx = np.sum(x)
-    sy = np.sum(y)
-    sxx = np.sum(x * x)
-    sxy = np.sum(x * y)
-    denom = n * sxx - sx * sx
-    if denom == 0:
-        return np.nan, np.nan
-    m = (n * sxy - sx * sy) / denom
-    b = (sxx * sy - sx * sxy) / denom
-    return m, b

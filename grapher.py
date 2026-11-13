@@ -266,102 +266,61 @@ class grapher:
         axE.set_ylabel("Background subtracted Flux (Electrons)")
         plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Flux_LamCal_Res_"+str(scinum)+".png", dpi=300)   
         
-    def plot_sci_flux_masked(self, lam_red, lam_remove, flux_mask_red, flux_mask_remove, wavelengths, con_lam_test, scinum):
-        plt.cla() # Clear plt to prevent over plotting
-        fig, axE = plt.subplots(1, 1, figsize=(8,6))
-        axE.scatter(lam_red,flux_mask_red, s=1, color="green")
-        axE.scatter(lam_remove,flux_mask_remove, s=1, color="red")
-        axE.set_xlim(3750,4000)
-        axE.set_xlabel("Wavelength (A)")
-        axE.set_ylabel("Background subtracted Flux (Electrons)")
-        
-        axE.scatter(wavelengths,con_lam_test, s=1, color="black")
-        # 6 Zoomed in sci_flux_masked plots
-        for i in range(0,3000,500):
-            axE.set_xlim((3700+i),(4200+i))
-            os.makedirs(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Flux_Masked_All_"+str(scinum), exist_ok=True) # Initializes a directory for E20 files
-            plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/Sci_Flux_Masked_All_"+str(scinum)+"/Sci_Flux_Masked_All_i"+str(scinum)+"_"+str(i)+".png", dpi=300)   
-    
-    def plot_sci_flux_norm_est(self, wavelengths, Fnorm_Es, scinum):
-        plt.cla()
-        fig, axCont = plt.subplots(1, 1, figsize=(8,6))
-        axCont.scatter(wavelengths,Fnorm_Es, s=1,color="green")
-        axCont.set_xlabel("Wavelength (A)")
-        axCont.set_ylabel("Estimate Cont. Normalized Flux")
-        plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Flux_NormEst_"+str(scinum)+".png", dpi=300)   
-    
-    def plot_fit_over_flux(self, fitted_wavelengths, smooth_cont, fitted_values, fitted_fluxes, lam_removea, flux_mask_removea, lam_red, lam_remove, flux_mask_red, flux_mask_remove, lam_reda, flux_mask_reda, scinum):
-        plt.cla()
-        fig, axL = plt.subplots(1, 1, figsize=(8,6))
-        axL.scatter(fitted_wavelengths,smooth_cont, s=1,color="blue")
-        axL.scatter(fitted_wavelengths,fitted_values, s=0.9,color="green")
-        
-        axL.scatter(fitted_wavelengths,fitted_fluxes, s=0.1,color="black")
-        axL.scatter(lam_removea,flux_mask_removea,s=0.1,color="red")
-        axL.set_xlabel("Wavelength (A)")
-        axL.set_ylabel("Fitted Values over Flux")
-        plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"FitOverFlux_"+str(scinum)+".png", dpi=300)   
-        
-        # 4 evenly spaced plots of the fitted values, the raw, origonal fluxes, and the smoothed fitted values
-        if (self.verbose == True):
-            for i in range(3700,6700,500):
-                plt.cla()
-                axL.scatter(lam_red,flux_mask_red, s=0.5, color="blue") # Non absorption features flux values Fnorm_es < 1.3
-                axL.scatter(lam_remove,flux_mask_remove, s=0.5, color="magenta") # Absoprtion features flux values Fnorm_es < 1.3
-                axL.scatter(lam_reda,flux_mask_reda, s=0.5, color="green") # All Non absorption features flux values 
-                axL.scatter(lam_removea,flux_mask_removea, s=0.5, color="red") # All Absoprtion features flux values
-                axL.scatter(fitted_wavelengths,smooth_cont, s=1,color="black") # Continum flux
-                axL.set_xlabel("Wavelength (A)")
-                axL.set_ylabel("Fitted Values over Flux")
-                axL.set_xlim((i),(i+1000))
-                os.makedirs(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"FitOverFluxZoom_"+str(scinum), exist_ok=True) # Initializes a directory for E20 files
-                plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"FitOverFluxZoom_"+str(scinum)+"/FitOverFlux_iter_"+str(scinum)+"_"+str(i)+".png", dpi=300)   
-        
-    def plot_sci_normalized(self, fitted_wavelengths, Fnorm, sf_sm, scinum):
-        plt.cla()
-        fig, axNorm = plt.subplots(1, 1, figsize=(8,6))
-        axNorm.scatter(fitted_wavelengths,Fnorm, s=1,color="black")
-        axNorm.scatter(fitted_wavelengths,sf_sm, s=0.5,color="red")
-        axNorm.axhline(1,color="red",linestyle="--")
-        axNorm.set_xlabel("Wavelength (A)")
-        axNorm.set_ylabel("Normalized Flux")
-        axNorm.set_title("Normalized Spectra for "+self.objid+" Image:"+str(scinum))
-        axNorm.set_ylim(0,1.5)
-        plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Normalized_"+str(scinum)+".png", dpi=300)   
-        
-        # Some other diagnostic plots
-        plt.cla()
-        fig, axNorm = plt.subplots(1, 1, figsize=(8,6))
-        axNorm.scatter(fitted_wavelengths[3000:4096],Fnorm[3000:4096], s=1,color="black")
-        axNorm.set_xlim(3760,4400)
-        axNorm.axhline(1,color="red",linestyle="--")
-        axNorm.set_xlabel("Wavelength (A)")
-        axNorm.set_ylabel("Normalized Flux")
-        plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Normalized_Left"+str(scinum)+".png", dpi=300)   
-        
-        
-        plt.cla()
-        fig, axNorm = plt.subplots(1, 1, figsize=(8,6))
-        axNorm.scatter(fitted_wavelengths[2700:3300],Fnorm[2700:3300], s=1,color="black")
-        axNorm.set_xlabel("Wavelength (A)")
-        axNorm.set_ylabel("Normalized Flux")
-        plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"Sci_Normalized_hbeta"+str(scinum)+".png", dpi=300)   
-    
-    def plot_combined_norm(self, gwave, med_comb, sig_final, snr):
-        plt.cla()
-        fig, axNorm = plt.subplots(1, 1, figsize=(8,6))
-        axNorm.scatter(gwave,med_comb, s=0.8,color="black")
-        axNorm.axhline(1,color="red",linestyle="--")
-        axNorm.set_xlabel("Wavelength (A)")
-        axNorm.set_ylabel("Median Normalized Flux")
-        axNorm.set_ylim(-0.1,1.5)
-        
-        axNorm.scatter(gwave,sig_final, s=0.3,color="red")
-        axNorm.set_title("Median Normalized Spectra for "+self.objid+", S/N 5500 A: "+str(np.round(snr, decimals=1)))
-        
-        plt.savefig(self.target_dir+"OUT/"+self.objid+"_OUT.png", dpi=300)
-        
-        if (self.verbose == True):
-            for i in range(0,2600,40):
-                axNorm.set_xlim((3700+i),(4200+i))
-                plt.savefig(self.target_dir+"OUT/"+self.objid+"_OUT_Zoom"+str(i)+".png", dpi=300)
+    def plot_combined(self, lam, flux, sigma, snr):
+        """Combined (not normalized) spectrum and its error."""
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(lam, flux, color="black", linewidth=0.6, label="flux")
+        ax.plot(lam, sigma, color="red", linewidth=0.6, label="error")
+        ax.set_xlabel("Wavelength (A)")
+        ax.set_ylabel("Flux (e- per pixel)")
+        ax.set_title(f"Combined spectrum for {self.objid}, S/N 5500 A: {snr:.1f}")
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(self.target_dir + "OUT/" + self.objid + "_combined.png", dpi=200)
+        plt.close(fig)
+
+    def plot_continuum(self, lam, flux, cont, used, regions):
+        """Combined spectrum with the fitted continuum, the pixels the fit used, and masked regions."""
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(lam, flux, color="0.6", linewidth=0.6, label="flux")
+        ax.scatter(lam[used], flux[used], s=0.5, color="black", label="used in fit")
+        ax.plot(lam, cont, color="red", linewidth=1.0, label="continuum")
+        for lo, hi in regions:
+            if lo < np.nanmax(lam) and hi > np.nanmin(lam):
+                ax.axvspan(lo, hi, color="blue", alpha=0.1, linewidth=0)
+        ax.set_xlim(np.nanmin(lam), np.nanmax(lam))
+        ax.set_xlabel("Wavelength (A)")
+        ax.set_ylabel("Flux (e- per pixel)")
+        ax.set_title(f"Continuum fit for {self.objid} (shaded: masked regions)")
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(self.target_dir + "OUT/" + self.objid + "_continuum.png", dpi=200)
+        if self.verbose:
+            # Zoomed views, 500 A wide
+            os.makedirs(self.target_dir + "OUT/continuum_zoom", exist_ok=True)
+            for start in np.arange(np.floor(np.nanmin(lam) / 100) * 100, np.nanmax(lam), 400):
+                ax.set_xlim(start, start + 500)
+                m = (lam >= start) & (lam <= start + 500)
+                if m.any():
+                    ax.set_ylim(0, 1.15 * np.nanmax(np.r_[flux[m], cont[m]]))
+                    fig.savefig(self.target_dir + f"OUT/continuum_zoom/{self.objid}_continuum_{int(start)}.png", dpi=200)
+        plt.close(fig)
+
+    def plot_normalized(self, lam, flux, sigma):
+        """Normalized combined spectrum and its error."""
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(lam, flux, color="black", linewidth=0.6)
+        ax.plot(lam, sigma, color="red", linewidth=0.6)
+        ax.axhline(1, color="red", linestyle="--", linewidth=0.8)
+        ax.set_xlabel("Wavelength (A)")
+        ax.set_ylabel("Normalized flux")
+        ax.set_ylim(-0.1, 1.5)
+        ax.set_title(f"Normalized spectrum for {self.objid}")
+        fig.tight_layout()
+        fig.savefig(self.target_dir + "OUT/" + self.objid + "_normalized.png", dpi=200)
+        if self.verbose:
+            os.makedirs(self.target_dir + "OUT/normalized_zoom", exist_ok=True)
+            for start in np.arange(np.floor(np.nanmin(lam) / 100) * 100, np.nanmax(lam), 400):
+                ax.set_xlim(start, start + 500)
+                fig.savefig(self.target_dir + f"OUT/normalized_zoom/{self.objid}_normalized_{int(start)}.png", dpi=200)
+        plt.close(fig)

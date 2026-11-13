@@ -35,8 +35,8 @@ site_height = 2788.0   # m; not in the headers (APO)
 
 [steps]
 reduce = true      # calibrate, trace, extract, wavelength-calibrate each frame
-normalize = true   # continuum-normalize each frame (needs reduce in the same run)
-combine = true     # median-combine the normalized frames (can run alone)
+combine = true     # scale and median-combine the extracted frames (can run alone)
+normalize = true   # optional: continuum-normalize the combined spectrum (can run alone)
 fit_lines = false  # velocity and metal-line fits on the combined spectrum
 
 [detector]
@@ -66,14 +66,22 @@ enabled = true
 sigclip = 4.5
 
 [normalization]
-line_width = 250   # half-width (pixels) of the local continuum fit
-boxcar = 70        # smoothing of the fitted continuum, pixels
-# clip = 1.3       # flag normalized flux >= this in the Mask column
+# Optional step (steps.normalize): fit a continuum to the combined spectrum and divide
+# by it. The continuum is a cubic spline, fit while leaving out pixels far below it
+# (absorption) or above it (emission, cosmic rays), and the masked regions.
+knot_spacing = 150.0   # A between spline knots; larger than the widest masked region
+low_reject = 2.0       # leave out pixels more than this many sigma below the continuum
+high_reject = 3.0      # ... or above it
+mask = "default"       # "default" (calib_data/masks/stellar.txt), "none", or a file: center, half-width (A)
+extra_mask = []        # more regions to leave out, e.g. [[5500, 5700]]
+# clip = 1.25          # flag (Mask bit 1) normalized flux above this
+clip_regions = []      # e.g. [[5500, 5700, 1.05]] to flag the zeroth order
 
 [combine]
-# clip = 1.25                         # flag combined flux > this
-clip_regions = []                     # e.g. [[5500, 5700, 1.05]] to flag the zeroth order
-jackknife = false                     # also report S/N with each frame left out
+# Frames are scaled to the one with the best S/N, then median-combined.
+scale = "smooth"   # "smooth" (polynomial in wavelength), "median" (one factor), or "none"
+scale_order = 2
+jackknife = false  # also report S/N with each frame left out
 
 [lines]
 # Half-widths (A) of the 16 metal-line windows used by fit_lines

@@ -1,0 +1,20 @@
+# Default regions left out of the continuum fit (normalization).
+# Columns: center (A, air), half-width (A), name.
+# Half-widths come from KARP's original pixel masks (x 0.69 A/pixel, blue grating);
+# broad-lined stars (e.g. A-type Balmer wings) may need wider masks. The asymmetric
+# clipping already rejects most narrow absorption lines, so this list is mainly for
+# features too broad for the clipping to remove.
+3797.90   7    H10 (H theta)
+3835.39  10    H9 (H eta)
+3889.05  13    H8 (H zeta)
+3933.66   7    Ca II K
+3968.47   7    Ca II H
+3970.07  24    H epsilon
+4101.73  28    H delta
+4340.46  41    H gamma
+4861.33  41    H beta
+5889.95   7    Na I D2
+5895.92  10    Na I D1
+6562.79  21    H alpha
+6876.0   10    O2 B band (telluric)
+7608.0   14    O2 A band (telluric)
