@@ -17,3 +17,6 @@ test_data/
 .vscode/
 .idea/
 .DS_Store
+
+# Regression harness run outputs
+tests/regression/runs/

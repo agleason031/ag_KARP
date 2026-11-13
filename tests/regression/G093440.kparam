@@ -1,0 +1,37 @@
+# Regression parameters for the G093440 test set (KOSMOS, blue grating, 2024-09-29).
+# Values come from the parameter dump in the original run's KARP_log.txt.
+# dloc and target_dir are overwritten by regress.py with absolute paths.
+dloc = test_data/in/
+target_dir = tests/regression/runs/unset/
+
+objid = G093440
+objRA = 23 50 59.00
+objDEC = +2 36 15.5
+# As in the original run's log. The real exposure start for frame 61 is 2024-09-29T05:27:03 (TAI).
+obsTime = 2024-09-29 22:30:00.500
+
+scistart = 61
+scistop = 63
+argnum = 64
+fstart = 1
+fstop = 7
+bstart = 9
+bstop = 17
+
+appw = 20
+buffw = 20
+bckw = 25
+clmin = 478
+clmax = 489
+norm_line_width = 250
+norm_line_boxcar = 70
+
+# Only used when fit_lines = true (16 lines). Placeholder; fit_lines is off for the baseline.
+metal_mask = [2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]
+
+skip_red = false
+spec_norm = true
+comb_spec = true
+fit_lines = false
+optimize = false
+verbose = false

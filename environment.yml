@@ -1,0 +1,15 @@
+name: ag_karp
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - scipy
+  - astropy
+  - ccdproc
+  - numba
+  - joblib
+  - tqdm
+  - matplotlib
+  - pygame
+  - pytest
