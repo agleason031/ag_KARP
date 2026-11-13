@@ -1,11 +1,11 @@
 {
-  "created": "2026-11-13T05:09:30",
+  "created": "2026-11-13T05:24:16",
   "git": {
-    "commit": "ed85255",
+    "commit": "6c2edaf",
     "dirty": false
   },
-  "note": "S/N from propagated errors; optimizer removed",
-  "snr": 193.2942733195857,
+  "note": "Combine extracted spectra; optional spline normalization",
+  "snr": 193.3381883151195,
   "v_helio": {
     "61": -4.147310855097247,
     "62": -4.160835890814477,
