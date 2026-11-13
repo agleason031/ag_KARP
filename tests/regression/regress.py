@@ -125,7 +125,9 @@ def git_info():
     def run(*cmd):
         return subprocess.run(cmd, cwd=REPO, capture_output=True, text=True).stdout.strip()
     return {"commit": run("git", "rev-parse", "--short", "HEAD"),
-            "dirty": bool(run("git", "status", "--porcelain", "--untracked-files=no"))}
+            # The reference files themselves don't count as uncommitted code changes
+            "dirty": bool(run("git", "status", "--porcelain", "--untracked-files=no",
+                              "--", ".", ":!tests/regression/reference"))}
 
 
 # ---------------------------------------------------------------------------
