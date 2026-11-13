@@ -2,7 +2,7 @@
 """
 Regression harness for KARP.
 
-Runs the full pipeline (ag_KARP.py) on the G093440 test set, captures the
+Runs the full pipeline (karp) on the G093440 test set, captures the
 intermediate and final arrays, and either saves them as the reference or
 compares them against the saved reference.
 
@@ -51,7 +51,7 @@ def parse_override(kv):
 
 
 def run_pipeline(overrides=None):
-    """Run KARP on the test set and return (its sci_modules instance, output dir for the object)."""
+    """Run KARP on the test set and return (its ObjectReduction, output dir for the object)."""
     if not DATA.is_dir():
         sys.exit(f"Test data not found at {DATA}")
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -59,10 +59,10 @@ def run_pipeline(overrides=None):
     run_dir.mkdir(parents=True)
 
     sys.path.insert(0, str(REPO))
-    import ag_KARP
+    from karp import cli
     settings = {"paths.raw_dir": str(DATA), "paths.output_dir": str(run_dir)}
     settings.update(overrides or {})
-    results = ag_KARP.main([str(CONFIG)], overrides=settings)
+    results = cli.main([str(CONFIG)], overrides=settings)
     if list(results) != [OBJECT]:
         sys.exit(f"Expected one object {OBJECT}, got {list(results)}")
     return results[OBJECT], run_dir / OBJECT
@@ -76,49 +76,49 @@ def block_mean(img, by=64, bx=16):
     return img[:ny2, :nx2].reshape(ny2 // by, by, nx2 // bx, bx).mean(axis=(1, 3))
 
 
-def snapshot(sm, out_dir):
-    """Collect the arrays worth tracking from a finished run."""
-    import sci_tools
+def snapshot(obj, out_dir):
+    """Collect the arrays worth tracking from a finished run (obj: karp.pipeline.ObjectReduction)."""
+    from karp import calibration
 
     snap = {}
 
     # Calibration frames: stats + block-averaged thumbnails (full frames are 37 MB each).
-    # The cache is keyed by a fingerprint of the input frames; a run makes exactly one entry
-    (masterbias, final_flat), = sci_tools._calibration_cache.values()
+    # A run makes or loads exactly one master bias / flat pair
+    (masterbias, final_flat), = calibration.cached_calibrations()
     for name, img in (("masterbias", np.asarray(masterbias)), ("final_flat", np.asarray(final_flat))):
         snap[f"{name}_thumb"] = block_mean(img)
         snap[f"{name}_stats"] = np.array([np.nanmedian(img), np.nanmean(img), np.nanstd(img)])
 
-    for n in sorted(sm.cen_line_dict):
-        snap[f"v_helio_{n}"] = np.array([sm.v_helio_dict[n]])
-        snap[f"cen_line_{n}"] = np.asarray(sm.cen_line_dict[n])
-        sol = sm.wave_solutions[n]
+    for n, fr in sorted(obj.frames.items()):
+        snap[f"v_helio_{n}"] = np.array([fr.v_helio])
+        snap[f"cen_line_{n}"] = np.asarray(fr.trace_columns)
+        sol = fr.solution
         snap[f"arc_centers_{n}"] = sol.rows[sol.used]
         snap[f"arc_lam_{n}"] = sol.lam[sol.used]
         snap[f"arc_rms_kms_{n}"] = np.array([sol.rms_kms])
-        if n in sm.flexure_dict:
-            offs = sm.flexure_dict[n]
-            snap[f"sky_offsets_{n}"] = np.array([[l, offs.get(l, np.nan)] for l in sm.sky_lines])
-        snap[f"flux_raw_{n}"] = np.asarray(sm.flux_raw_cor1_dict[n])
-        snap[f"sky_raw_{n}"] = np.asarray(sm.sky_raw_dict[n])
-        snap[f"err_raw_{n}"] = np.asarray(sm.err_dict[n])
-        snap[f"wavelengths_{n}"] = np.asarray(sm.wavelengths_dict[n])
+        if obj.wcfg["flexure"] != "off":
+            snap[f"sky_offsets_{n}"] = np.array([[l, fr.flexure.get(l, np.nan)] for l in obj.sky_lines])
+        snap[f"flux_raw_{n}"] = np.asarray(fr.flux)
+        snap[f"sky_raw_{n}"] = np.asarray(fr.sky)
+        snap[f"err_raw_{n}"] = np.asarray(fr.sigma)
+        snap[f"wavelengths_{n}"] = np.asarray(fr.wave)
 
     # Combined spectrum (not normalized)
-    if sm.comb_flux is not None:
-        snap["comb_lam"] = np.asarray(sm.comb_wave)
-        snap["comb_flux"] = np.asarray(sm.comb_flux)
-        snap["comb_sigma"] = np.asarray(sm.comb_sigma)
-        snap["comb_mask"] = np.asarray(sm.comb_mask)
+    if obj.combined is not None:
+        snap["comb_lam"] = np.asarray(obj.combined.wave)
+        snap["comb_flux"] = np.asarray(obj.combined.flux)
+        snap["comb_sigma"] = np.asarray(obj.combined.sigma)
+        snap["comb_mask"] = np.asarray(obj.combined.mask)
     # Normalized combined spectrum (optional step)
-    if getattr(sm, "continuum", None) is not None:
-        snap["norm_lam"] = np.asarray(sm.norm_wave)
-        snap["norm_flux"] = np.asarray(sm.norm_flux)
-        snap["norm_sigma"] = np.asarray(sm.norm_sigma)
-        snap["norm_continuum"] = np.asarray(sm.continuum)
-        snap["norm_contfit"] = np.asarray(sm.cont_used, dtype=np.int16)
-        snap["norm_mask"] = np.asarray(sm.norm_mask_out)
-    snap["snr"] = np.array([sm.snr if sm.snr is not None else np.nan])
+    if obj.normalized is not None:
+        nm = obj.normalized
+        snap["norm_lam"] = np.asarray(nm.wave)
+        snap["norm_flux"] = np.asarray(nm.flux)
+        snap["norm_sigma"] = np.asarray(nm.sigma)
+        snap["norm_continuum"] = np.asarray(nm.continuum)
+        snap["norm_contfit"] = np.asarray(nm.used, dtype=np.int16)
+        snap["norm_mask"] = np.asarray(nm.mask)
+    snap["snr"] = np.array([obj.snr if obj.snr is not None else np.nan])
     return snap
 
 
@@ -227,8 +227,8 @@ def main():
     if overrides and args.command == "make-reference":
         sys.exit("--set is for experiments; edit G093440.toml to change the reference settings.")
 
-    sm, out_dir = run_pipeline(overrides)
-    snap = snapshot(sm, out_dir)
+    obj, out_dir = run_pipeline(overrides)
+    snap = snapshot(obj, out_dir)
     np.savez_compressed(out_dir / "snapshot.npz", **snap)
     run_dir = out_dir
 

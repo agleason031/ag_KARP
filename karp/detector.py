@@ -82,6 +82,11 @@ def from_binning(header):
             "rows": [0, n_rows], "source": f"computed from binning {binx}x{biny}"}
 
 
+def settings(det):
+    """The [detector] settings that define how raw frames become trimmed electron images."""
+    return {k: det[k] for k in ("amp_data", "amp_overscan", "overscan_skip", "gain", "overscan_order")}
+
+
 def frame_geometry(header, det):
     """
     Layout of one raw frame: dict with amp_data and amp_overscan ([[c0, c1], ...],

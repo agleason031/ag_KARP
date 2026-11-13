@@ -6,7 +6,7 @@ Steps, for each science frame:
      with the local background removed (extract_arc).
   2. Find the arc emission lines and centroid them with Gaussian fits (find_arc_lines).
   3. Start from a rough solution for the grating (a reference file in
-     calib_data/wavecal/), and find the shift and stretch that line up the most
+     karp/data/wavecal/), and find the shift and stretch that line up the most
      catalog lines with the observed ones (initial_guess).
   4. Match observed lines to the catalog, fit a polynomial row -> wavelength with
      iterative sigma clipping, re-match with the improved solution, and repeat
@@ -14,13 +14,12 @@ Steps, for each science frame:
   5. Optionally measure night-sky emission lines in the science frame's background
      to check for flexure between the arc and the science exposure (sky_offsets).
 
-Line lists are in calib_data/linelists/ (air wavelengths). Reference solutions are
+Line lists are in karp/data/linelists/ (air wavelengths). Reference solutions are
 JSON files with a list of [row, wavelength] pairs; make one for a new grating with
-    python wavecal.py make-reference <wavecal table> --disperser NAME --binning-y N -o FILE
+    python scripts/make_wavecal_reference.py <wavecal table> --disperser NAME --binning-y N -o FILE
 
 Wavelengths are in air, in Angstroms. Rows are detector rows of the trimmed frame.
 """
-import argparse
 import json
 import os
 from dataclasses import dataclass, field
@@ -32,7 +31,7 @@ from scipy.optimize import curve_fit
 from scipy.ndimage import median_filter
 from scipy.signal import find_peaks
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calib_data")
+from .paths import data_file
 LAMP_FILES = {"ARGON": "ArI.txt", "NEON": "NeI.txt", "KRYPTON": "KrI.txt"}
 C_KMS = 299792.458
 
@@ -52,7 +51,7 @@ def load_linelist(lamps):
         name = LAMP_FILES.get(lamp.upper())
         if name is None:
             raise ValueError(f"No line list for lamp {lamp!r}; known: {sorted(LAMP_FILES)}")
-        with open(os.path.join(DATA_DIR, "linelists", name)) as f:
+        with open(data_file("linelists", name)) as f:
             for line in f:
                 line = line.split("#", 1)[0].split()
                 if line:
@@ -73,12 +72,12 @@ def remove_blends(catalog, min_sep):
 
 def load_reference(disperser, path=None):
     """
-    Reference solution: from `path` if given, else calib_data/wavecal/kosmos_<disperser>.json.
+    Reference solution: from `path` if given, else karp/data/wavecal/kosmos_<disperser>.json.
     Returns the parsed JSON (keys: disperser, binning_y, order, lines = [[row, lam], ...]).
     """
     if path is None:
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in disperser.lower())
-        path = os.path.join(DATA_DIR, "wavecal", f"kosmos_{safe}.json")
+        path = data_file("wavecal", f"kosmos_{safe}.json")
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"No reference wavelength solution for disperser {disperser!r} ({path}). "
@@ -102,9 +101,9 @@ def reference_polynomial(ref, binning_y):
 # arc extraction and line finding
 # ---------------------------------------------------------------------------
 
-def extract_arc(arc, cen_line, appw, baseline_window=101):
+def extract_arc(arc, columns, aperture_half, baseline_window=101):
     """
-    Arc spectrum along the trace: sum over the science aperture (cen_line +/- appw),
+    Arc spectrum along the trace: sum over the science aperture (columns +/- aperture_half),
     minus a running median along the rows as the baseline. (The lamp lights the whole
     slit, so the science background windows contain the same lines and can't be used
     as background.)
@@ -112,8 +111,8 @@ def extract_arc(arc, cen_line, appw, baseline_window=101):
     n_rows, n_cols = arc.shape
     spec = np.full(n_rows, np.nan)
     for r in range(n_rows):
-        c = int(cen_line[r])
-        lo, hi = c - appw, c + appw + 1
+        c = int(columns[r])
+        lo, hi = c - aperture_half, c + aperture_half + 1
         if lo >= 0 and hi <= n_cols:
             spec[r] = np.sum(arc[r, lo:hi])
     good = np.isfinite(spec)
@@ -369,14 +368,14 @@ def order_score(sol, order, disp):
 # flexure check with night-sky lines
 # ---------------------------------------------------------------------------
 
-def extract_sky(sci, cen_line, appw, buffw, bckw):
+def extract_sky(image, columns, aperture_half, buffer, background):
     """Sky spectrum per row: median of the background windows on both sides of the trace (e- per pixel)."""
-    n_rows, n_cols = sci.shape
+    n_rows, n_cols = image.shape
     sky = np.full(n_rows, np.nan)
     for r in range(n_rows):
-        c = int(cen_line[r])
-        left = sci[r, max(0, c - appw - buffw - bckw):max(0, c - appw - buffw)]
-        right = sci[r, min(n_cols, c + appw + buffw + 1):min(n_cols, c + appw + buffw + bckw + 1)]
+        c = int(columns[r])
+        left = image[r, max(0, c - aperture_half - buffer - background):max(0, c - aperture_half - buffer)]
+        right = image[r, min(n_cols, c + aperture_half + buffer + 1):min(n_cols, c + aperture_half + buffer + background + 1)]
         both = np.concatenate([left, right])
         if both.size:
             sky[r] = np.median(both)
@@ -416,7 +415,7 @@ def sky_offsets(sky, poly, sky_lines, half_window=8):
 
 
 # ---------------------------------------------------------------------------
-# command line: make a reference solution from a matched-line table
+# reference solution files
 # ---------------------------------------------------------------------------
 
 def format_reference(ref):
@@ -425,32 +424,3 @@ def format_reference(ref):
     text = json.dumps(head, indent=1)[:-2] + ',\n "lines": [\n'
     text += ",\n".join(f"  [{r}, {l}]" for r, l in ref["lines"])
     return text + "\n ]\n}\n"
-
-
-def _make_reference(args):
-    data = np.loadtxt(args.table, comments="#")
-    used = data[:, 5].astype(bool)
-    lines = [[round(float(r), 3), float(l)] for r, l in data[used][:, :2]]
-    ref = {"disperser": args.disperser, "binning_y": args.binning_y, "order": args.order,
-           "lamps": args.lamps, "source": args.source or f"made from {args.table}", "lines": lines}
-    with open(args.output, "w") as f:
-        f.write(format_reference(ref))
-    print(f"Wrote {args.output} with {len(lines)} lines")
-
-
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="KARP wavelength-calibration tools")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    mk = sub.add_parser("make-reference",
-                        help="reference solution from a KARP wavecal table (OUT/<obj>_wavecal_<n>.txt) "
-                             "or any table with columns row, wavelength, -, -, -, used")
-    mk.add_argument("table")
-    mk.add_argument("--disperser", required=True)
-    mk.add_argument("--binning-y", type=int, required=True, help="row (dispersion-axis) binning of that frame")
-    mk.add_argument("--order", type=int, default=3)
-    mk.add_argument("--lamps", nargs="+", default=["ARGON"])
-    mk.add_argument("--source", default="")
-    mk.add_argument("-o", "--output", required=True)
-    args = ap.parse_args()
-    if args.cmd == "make-reference":
-        _make_reference(args)

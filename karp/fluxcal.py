@@ -8,7 +8,7 @@ sensitivity function, which is then applied to every object with that setup:
      scale) is converted to a count rate per Angstrom, C = Flux / (t * dlam), and
      corrected for atmospheric extinction: C0 = C * 10**(0.4 * k(lam) * X), with t and
      X (mid-exposure airmass) of the reference frame.
-  2. The tabulated flux of the standard (calib_data/standards/, from HST CALSPEC) and
+  2. The tabulated flux of the standard (karp/data/standards/, from HST CALSPEC) and
      the observed count rate are brought to a common resolution: at each wavelength,
      whichever is sharper is smoothed to the resolution of the other (CALSPEC's optical
      spectra, 5.5-9.8 A FWHM, are usually the coarser). The KOSMOS resolution is the
@@ -18,7 +18,7 @@ sensitivity function, which is then applied to every object with that setup:
      comparison only (it is logged as a wavelength check).
   4. The sensitivity, s = 2.5 log10(C0 / F_ref) (mag), is fit with a cubic spline in
      wavelength, weighted by the errors, leaving out the standard's line cores and the
-     telluric bands (calib_data/masks/standard.txt) and clipping outliers.
+     telluric bands (karp/data/masks/standard.txt) and clipping outliers.
   5. A spectrum is calibrated as F = C0 / 10**(s / 2.5) (erg/s/cm^2/A), each with its
      own exposure time and airmass. Science spectra are never smoothed.
 
@@ -34,10 +34,11 @@ from astropy.stats import mad_std
 from scipy.interpolate import LSQUnivariateSpline
 from scipy.ndimage import gaussian_filter1d
 
-from normalize import _knots, in_regions, load_mask
+from .regions import in_regions, mask_regions, spline_knots
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calib_data")
-STD_DIR = os.path.join(DATA_DIR, "standards")
+from .paths import data_file
+
+STD_DIR = data_file("standards")
 # Resolution (FWHM, A) of CALSPEC's optical STIS spectra (G430L below ~5700 A, G750L
 # above), used when a file gives none
 STIS_FWHM = ((5700.0, 5.5), (np.inf, 9.8))
@@ -66,7 +67,7 @@ def find_standard(objname):
 
 def load_standard(spec):
     """
-    Tabulated flux of a standard: a library name (calib_data/standards/index.json) or a
+    Tabulated flux of a standard: a library name (karp/data/standards/index.json) or a
     file with columns air wavelength (A), flux (erg/s/cm^2/A) and optionally its
     resolution (FWHM, A). Returns (lam, flux, fwhm, label); a missing or zero FWHM is
     taken as that of CALSPEC's STIS spectra (STIS_FWHM).
@@ -82,8 +83,8 @@ def load_standard(spec):
 
 
 def load_extinction(spec):
-    """Extinction curve: "apo" (calib_data/extinction/apo.txt) or a file of air wavelength (A), mag/airmass."""
-    path = os.path.join(DATA_DIR, "extinction", "apo.txt") if spec == "apo" else spec
+    """Extinction curve: "apo" (karp/data/extinction/apo.txt) or a file of air wavelength (A), mag/airmass."""
+    path = data_file("extinction", "apo.txt") if spec == "apo" else spec
     data = np.loadtxt(path, comments="#", usecols=(0, 1))
     order = np.argsort(data[:, 0])
     return data[order, 0], data[order, 1]
@@ -155,7 +156,7 @@ def line_mismatch(lam, rate, ref, inst_fwhm, offset, regions, knot_spacing):
     ok = np.isfinite(y)
     x, y = x[ok], y[ok]
     masked = in_regions(x, regions)
-    knots = _knots(x[~masked], knot_spacing, 15)
+    knots = spline_knots(x[~masked], knot_spacing, 15)
     resid = y - LSQUnivariateSpline(x[~masked], y[~masked], knots, k=3)(x)
     return float(np.sqrt(np.mean(resid[masked] ** 2))) if masked.any() else np.nan
 
@@ -188,7 +189,7 @@ def fit_sensitivity(lam, sens, sens_err, bad, regions, knot_spacing=250.0, clip_
         raise RuntimeError(f"Only {ok.sum()} usable pixels for the sensitivity fit")
     used = ok.copy()
     for it in range(max_iter):
-        knots = _knots(x[used], knot_spacing, min_points)
+        knots = spline_knots(x[used], knot_spacing, min_points)
         spl = LSQUnivariateSpline(x[used], y[used], knots, w=1 / e[used], k=3)
         fit = spl(x)
         resid = y - fit
@@ -213,9 +214,7 @@ def sensitivity(lam, flux, sigma, bad, exptime, airmass, extinction, ref, inst_f
     sensitivity (mag) on lam, the pixels used, the RMS, the wavelength offset and notes.
     """
     rate, rate_err = count_rate(lam, flux, sigma, exptime, airmass, extinction)
-    regions = load_mask(os.path.join(DATA_DIR, "masks", "standard.txt") if cfg["mask"] == "default" else cfg["mask"])
-    if len(cfg["extra_mask"]):
-        regions = np.vstack([regions, np.array(cfg["extra_mask"], dtype=float).reshape(-1, 2)])
+    regions = mask_regions(cfg["mask"], cfg["extra_mask"], "standard.txt")
     notes = []
     offset = 0.0
     if cfg["fit_offset"]:

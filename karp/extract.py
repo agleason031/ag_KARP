@@ -15,20 +15,20 @@ Both return the flux, its variance (including the uncertainty of the sky fit), a
 the sky under the aperture, all in electrons.
 
 Geometry, in pixels, relative to the trace center t of each row:
-  aperture:    |x - t| <= half                    (half = appw + 0.5, i.e. 2*appw+1 pixels)
-  background:  half + buffw <= |x - t| <= half + buffw + bckw
+  aperture:    |x - t| <= half                    (half = aperture_half + 0.5, i.e. 2*aperture_half+1 pixels)
+  background:  half + buffer <= |x - t| <= half + buffer + background
 """
 import numpy as np
 from scipy.ndimage import uniform_filter1d
 
 
-def variance_image(sci, flat, readnoise):
+def variance_image(image, flat, readnoise):
     """
     Per-pixel variance (e-^2) of a bias-subtracted, flat-fielded frame in electrons.
-    Before flat-fielding a pixel had sci*flat electrons with Poisson + read noise;
+    Before flat-fielding a pixel had image*flat electrons with Poisson + read noise;
     dividing by the flat divides the variance by flat^2.
     """
-    raw = sci * flat
+    raw = image * flat
     return (np.maximum(raw, 0.0) + readnoise ** 2) / flat ** 2
 
 
@@ -68,19 +68,19 @@ def _smooth_profile(frac, window):
         return np.where(den > 0, num / den, np.nan)
 
 
-def extract(sci, var, flat, trace, appw, buffw, bckw, readnoise, method="boxcar",
+def extract(image, var, flat, trace, aperture_half, buffer, background, readnoise, method="boxcar",
             sky_order=1, profile_window=101, reject_sigma=5.0, diag_rows=()):
     """
     Extract a spectrum from a 2D frame (electrons, bias-subtracted, flat-fielded).
 
-    sci, var, flat: 2D arrays (rows x columns); trace: sub-pixel trace center per row.
+    image, var, flat: 2D arrays (rows x columns); trace: sub-pixel trace center per row.
     Returns a dict of per-row arrays: flux, var, sky (electrons under the aperture),
     n_rejected (optimal only), and "diag": {row: details} for the rows in diag_rows.
     Rows where the aperture or background falls off the frame get NaN.
     """
-    n_rows, n_cols = sci.shape
-    half = appw + 0.5
-    inner, outer = half + buffw, half + buffw + bckw
+    n_rows, n_cols = image.shape
+    half = aperture_half + 0.5
+    inner, outer = half + buffer, half + buffer + background
     flux = np.full(n_rows, np.nan)
     fvar = np.full(n_rows, np.nan)
     sky_tot = np.full(n_rows, np.nan)
@@ -95,7 +95,7 @@ def extract(sci, var, flat, trace, appw, buffw, bckw, readnoise, method="boxcar"
     for r in np.nonzero(rows_ok)[0]:
         t = trace[r]
         x = np.arange(lo_all[r], hi_all[r])
-        d = sci[r, x]
+        d = image[r, x]
         dist = np.abs(x - t)
         bkg = (dist >= inner) & (dist <= outer)
         c, cov = _fit_sky(x[bkg] - t, d[bkg], sky_order)
@@ -128,7 +128,7 @@ def extract(sci, var, flat, trace, appw, buffw, bckw, readnoise, method="boxcar"
     for r in good_rows:
         xa, sky, *_ = sky_fits[r]
         if flux[r] > 0:
-            frac[r, xa - cmin] = (sci[r, xa] - sky) / flux[r]
+            frac[r, xa - cmin] = (image[r, xa] - sky) / flux[r]
     profile = _smooth_profile(frac, profile_window)
 
     # Pass 3: optimal flux per row with model variance and outlier rejection
@@ -138,7 +138,7 @@ def extract(sci, var, flat, trace, appw, buffw, bckw, readnoise, method="boxcar"
         if not np.all(np.isfinite(P)) or P.sum() <= 0:
             continue
         P = P / P.sum()
-        d = sci[r, xa] - sky
+        d = image[r, xa] - sky
         f_row = flat[r, xa]
         use = np.ones(len(xa), dtype=bool)
         f = flux[r] if np.isfinite(flux[r]) else np.sum(d)

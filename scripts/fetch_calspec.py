@@ -1,9 +1,9 @@
 """
 Download spectrophotometric standards from HST CALSPEC and write them as KARP text
-files (calib_data/standards/<name>.txt) plus an index (index.json) of names and aliases.
+files (karp/data/standards/<name>.txt) plus an index (index.json) of names and aliases.
 
-    python calib_data/standards/fetch_calspec.py              # the standards listed below
-    python calib_data/standards/fetch_calspec.py --only g191b2b
+    python scripts/fetch_calspec.py              # the standards listed below
+    python scripts/fetch_calspec.py --only g191b2b
 
 Each output file has columns: air wavelength (A), flux (erg/s/cm^2/A), FWHM of the
 CALSPEC spectrum (A), trimmed to 3000-11000 A. CALSPEC wavelengths are in vacuum; they
@@ -19,7 +19,7 @@ import numpy as np
 from astropy.io import fits
 
 URL = "https://archive.stsci.edu/hlsps/reference-atlases/cdbs/current_calspec/"
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "karp", "data", "standards")
 LAM_MIN, LAM_MAX = 3000.0, 11000.0
 
 # name: (CALSPEC file, aliases as they might appear in OBJNAME)

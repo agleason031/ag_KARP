@@ -21,7 +21,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.time import Time
 
-import detector
+from . import detector
 
 LAMPS = ("ARGON", "NEON", "KRYPTON")
 ARC_SEQUENCE_HOURS = 1.0 # arcs with the same lamps this close to the chosen one are combined with it

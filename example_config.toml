@@ -1,10 +1,10 @@
 # KARP example configuration
 #
-#   python ag_KARP.py example_config.toml --list   # check which frames KARP will use
-#   python ag_KARP.py example_config.toml          # reduce
+#   python -m karp example_config.toml --list   # check which frames KARP will use
+#   python -m karp example_config.toml          # reduce (or: karp ..., python ag_KARP.py ...)
 #
 # Only [paths] is required. Every other setting below is shown with its default
-# (see config.py); delete or comment out anything you don't need to change.
+# (see karp/config.py); delete or comment out anything you don't need to change.
 # Settings that default to "not set" are shown commented out.
 
 [paths]
@@ -88,7 +88,7 @@ sigclip = 4.5
 knot_spacing = 150.0   # A between spline knots; larger than the widest masked region
 low_reject = 2.0       # leave out pixels more than this many sigma below the continuum
 high_reject = 3.0      # ... or above it
-mask = "default"       # "default" (calib_data/masks/stellar.txt), "none", or a file: center, half-width (A)
+mask = "default"       # "default" (karp/data/masks/stellar.txt), "none", or a file: center, half-width (A)
 extra_mask = []        # more regions to leave out, e.g. [[5500, 5700]]
 # clip = 1.25          # flag (Mask bit 1) normalized flux above this
 clip_regions = []      # e.g. [[5500, 5700, 1.05]] to flag the zeroth order
@@ -97,15 +97,15 @@ clip_regions = []      # e.g. [[5500, 5700, 1.05]] to flag the zeroth order
 # Optional step (steps.fluxcal). A spectrophotometric standard observed with the same
 # setup gives the sensitivity function (count rate / tabulated flux, corrected for
 # extinction and fit with a spline), applied to every object with that setup; writes
-# OUT/<obj>_fluxed.fits (erg/s/cm2/A) and the standard's OUT/<std>_sensfunc.fits.
+# <obj>_fluxed.fits (erg/s/cm2/A) and the standard's calib/<std>_sensfunc.fits.
 # The shape is reliable; the absolute level depends on slit losses and transparency.
-standard = "auto"      # "auto": recognize standards by OBJNAME (calib_data/standards/index.json),
+standard = "auto"      # "auto": recognize standards by OBJNAME (karp/data/standards/index.json),
                        #   or the OBJNAME of the object to use as the standard
 # reference = "my_star.txt"  # tabulated flux (air A, erg/s/cm2/A) for a standard not in the library
-extinction = "apo"     # "apo" (calib_data/extinction/apo.txt) or a file: wavelength (A), mag/airmass
+extinction = "apo"     # "apo" (karp/data/extinction/apo.txt) or a file: wavelength (A), mag/airmass
 knot_spacing = 250.0   # A between spline knots
 clip_sigma = 3.0
-mask = "default"       # "default" (calib_data/masks/standard.txt), "none", or a file: center, half-width (A)
+mask = "default"       # "default" (karp/data/masks/standard.txt), "none", or a file: center, half-width (A)
 extra_mask = []        # more regions to leave out, e.g. [[5500, 5700]]
 resolution = 0.0       # KOSMOS FWHM (A) for comparing the standard with its tabulated flux at
                        #   matched resolution; 0 = arc line width (the result depends little on it)
@@ -125,11 +125,11 @@ jackknife = false  # also report S/N with each frame left out
 
 [wavecal]
 # Arc lines are found and identified automatically, starting from a rough solution
-# for the grating in calib_data/wavecal/kosmos_<disperser>.json. Each run writes
-# OUT/<object>_wavecal_<n>.txt with every matched line and its residual.
+# for the grating in karp/data/wavecal/kosmos_<disperser>.json. Each run writes
+# diagnostics/frame_<n>/wavecal_lines.txt with every matched line and its residual.
 order = "auto"     # polynomial order, or "auto" (best leave-one-out accuracy, orders 2-6)
 lamps = []         # line lists, e.g. ["ARGON", "NEON"]; empty = lamps on in the arc header
-# reference = "calib_data/wavecal/kosmos_blue.json"   # default: by disperser
+# reference = "karp/data/wavecal/kosmos_blue.json"   # default: by disperser
 search = 200       # largest shift (unbinned rows) between the reference and the arc
 match_tol = 3.0    # unbinned rows
 clip_sigma = 3.0

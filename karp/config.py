@@ -95,7 +95,7 @@ DEFAULTS = {
         "knot_spacing": 150.0, # A between spline knots; must exceed the widest masked region
         "low_reject": 2.0, # Leave out pixels more than this many sigma below the continuum
         "high_reject": 3.0, # ... or this many sigma above it
-        "mask": "default", # Regions left out of the fit: "default" (calib_data/masks/stellar.txt),
+        "mask": "default", # Regions left out of the fit: "default" (karp/data/masks/stellar.txt),
                            # "none", or a file with columns center, half-width (A)
         "extra_mask": [], # More regions to leave out: [[lam_min, lam_max], ...]
         "clip": None, # Flag (Mask bit 1) normalized flux above this (default: no flag)
@@ -104,14 +104,14 @@ DEFAULTS = {
     "fluxcal": {
         # Optional: a spectrophotometric standard observed with the same setup (disperser,
         # slit, binning) gives the sensitivity function for every object with that setup.
-        "standard": "auto", # "auto": objects whose OBJNAME matches calib_data/standards/index.json;
+        "standard": "auto", # "auto": objects whose OBJNAME matches karp/data/standards/index.json;
                             # or the OBJNAME of the one object to use as the standard
         "reference": None, # Tabulated flux of the standard (air wavelength A, erg/s/cm2/A) if it
                            # isn't in the library (use with standard = its OBJNAME)
         "extinction": "apo", # Extinction curve: "apo" or a file of wavelength (A), mag/airmass
         "knot_spacing": 250.0, # A between spline knots of the sensitivity fit
         "clip_sigma": 3.0, # Sigma clipping of the sensitivity fit
-        "mask": "default", # Regions left out of the fit: "default" (calib_data/masks/standard.txt),
+        "mask": "default", # Regions left out of the fit: "default" (karp/data/masks/standard.txt),
                            # "none", or a file with columns center, half-width (A)
         "extra_mask": [], # More regions to leave out: [[lam_min, lam_max], ...]
         "resolution": 0.0, # KOSMOS resolution (FWHM, A) for comparing the standard with its
@@ -136,7 +136,7 @@ DEFAULTS = {
         "order": "auto", # Polynomial order, or "auto": the order (2-6) that best predicts each
                          # line from the others (leave-one-out)
         "lamps": [], # Line lists to use, e.g. ["ARGON"] (default: lamps that are on in the arc header)
-        "reference": None, # Reference solution file (default: calib_data/wavecal/kosmos_<disperser>.json)
+        "reference": None, # Reference solution file (default: karp/data/wavecal/kosmos_<disperser>.json)
         "search": 200, # Largest shift (unbinned rows) allowed between the reference and this arc
         "match_tol": 3.0, # Match observed and catalog lines within this many unbinned rows
         "clip_sigma": 3.0, # Sigma clipping of the fit

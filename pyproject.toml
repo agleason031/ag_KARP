@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ag-karp"
-version = "0.1.0"
+dynamic = ["version"]
 description = "KARP: KOSMOS Astronomical Reduction Pipeline for long-slit spectra from KOSMOS (APO 3.5 m)"
 readme = "README.md"
 requires-python = ">=3.11"  # tomllib
@@ -25,10 +25,13 @@ sound = ["pygame"]  # [output] sound = true
 test = ["pytest"]
 
 [project.scripts]
-karp = "ag_KARP:main"
+karp = "karp.cli:main"
 
-# KARP is a set of top-level modules that find calib_data/ next to themselves, so
-# install it in editable mode (pip install -e .) from a clone of the repository.
 [tool.setuptools]
-py-modules = ["ag_KARP", "config", "detector", "discover", "extract", "fluxcal", "functions", "grapher",
-              "normalize", "sci_modules", "sci_tools", "wavecal"]
+packages = ["karp"]
+
+[tool.setuptools.package-data]
+karp = ["data/*/*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "karp.__version__" }
