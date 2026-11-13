@@ -31,20 +31,6 @@ def con_lam(wave, params):
     # flux as a function of wavelength
     return (aa*(wave)**6)+(bb*(wave)**5)+(cc*wave**4)+(dd*wave**3)+(ee*wave**2)+(ff*wave)+gg
 
-@njit
-def gaussian_integral_vec(a, mu, sigma, bck, x1, x2):
-    result = np.empty(a.shape)
-    sqrt2 = math.sqrt(2.0)
-    sqrt_2pi = math.sqrt(2.0 * math.pi)
-    for i in range(a.shape[0]):
-        term1 = (x2[i] - mu[i]) / (sqrt2 * sigma[i])
-        term2 = (x1[i] - mu[i]) / (sqrt2 * sigma[i])
-        erf_term = math.erf(term1) - math.erf(term2)
-        gauss_area = a[i] * sigma[i] * sqrt_2pi * 0.5 * erf_term
-        bck_area = bck[i] * (x2[i] - x1[i])
-        result[i] = gauss_area + bck_area
-    return result
-
 def fit_cent_gaussian(x_vals, y_vals, y_bck, clr):
     if x_vals is None:
         return [np.nan, np.nan, np.nan, np.nan]

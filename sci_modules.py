@@ -12,7 +12,8 @@ from astropy.nddata import CCDData
 from astropy.table import Table
 from astropy.stats import mad_std
 from numpy.polynomial import Polynomial
-from functions import fit_cent_gaussian, build_fit_args, gaussian_integral_vec
+from functions import fit_cent_gaussian, build_fit_args
+from extract import extract, variance_image
 from functions import con_lam
 import wavecal
 from wavecal import C_KMS
@@ -41,6 +42,10 @@ class sci_modules:
         self.appw = int(np.round(float(ext["aperture"])-1)/2) # So an appature width inputu of 13 is two 6 pixel sides, and if you put 14 it rounds to 13
         self.buffw = int(ext["buffer"]) # Width of the buffer in pixels (on either side of the appature, so 4 is two, 4 pix buffers su,etrically spaced around the center line)
         self.bckw = int(ext["background"]) # The width of the background in pixels, (on either side of the buffer)
+        self.extract_method = ext["method"] # "optimal" or "boxcar"
+        self.sky_order = ext["sky_order"] # polynomial order of the sky fit across the slit
+        self.profile_window = ext["profile_window"] # rows over which the spatial profile is smoothed
+        self.reject_sigma = ext["reject_sigma"] # optimal extraction outlier threshold
         self.trace_order = cfg["trace"]["order"] # Polynomial order of the trace fit
         self.trace_col = cfg["trace"]["col"] # Optional starting column for the trace; found automatically if None
         norm = cfg["normalization"]
@@ -71,6 +76,9 @@ class sci_modules:
         self.flux_raw_cor1_dict = {}
         self.wavelengths_dict = {}
         self.sky_raw_dict = {}
+        self.err_dict = {} # 1-sigma extraction error per kept row
+        self.var_dict = {} # 2D variance image per science frame
+        self.trace_dict = {} # sub-pixel trace per science frame
         self.sci_final_dict = {}
         self.cen_line_dict = {}
         self.wave_solutions = {} # wavecal.WaveSolution per science frame
@@ -134,6 +142,9 @@ class sci_modules:
                 sci_final_write = CCDData(sci_final, unit="electron")
                 sci_final_write.write(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"sci_final_"+str(scinum)+".fits", overwrite = True)
 
+            # Per-pixel variance (e-^2) for the extraction errors
+            self.var_dict[scinum] = variance_image(sci_final_1, final_flat, self.readnoise)
+
     #----------------------------
     #trace fitting
         
@@ -141,81 +152,36 @@ class sci_modules:
         #so save and attempt to get from dict to save expensive calculations
         if scinum in self.cen_line_dict:
             cen_line = self.cen_line_dict[scinum]
+            trace = self.trace_dict[scinum]
         else:
-            cen_line = self.fit_trace(sci_final_1, verbose) #get center trace
+            cen_line, trace, trace_fits = self.fit_trace(sci_final_1, verbose) #get center trace
             self.grapher.plot_cen_line(cen_line, scinum)
-            self.cen_line_dict[scinum] = cen_line.copy() #save center trace
+            self.cen_line_dict[scinum] = cen_line.copy() #save center trace (whole pixels)
+            self.trace_dict[scinum] = trace.copy() #sub-pixel trace used for extraction
+            if (verbose == True):
+                print("Plotting Gauss cen values and Gauss sig values vs Y pix")
+                self.grapher.gauss_cen_plots(trace_fits, cen_line, scinum)
     #----------------------------------
     #flux extraction
-        fit_args = build_fit_args(sci_final_1, cen_line, self.appw, self.buffw, self.bckw)
-        sci1_fit = np.array(
-            Parallel(n_jobs=-1)(delayed(fit_cent_gaussian)(*args) for args in tqdm(fit_args))
-            )
-    
-        print("KARP finished fitting flux Gaussians")
+        print(f"Extracting flux ({self.extract_method})...")
+        n_rows = sci_final_1.shape[0]
+        res = extract(sci_final_1, self.var_dict[scinum], final_flat, trace, self.appw, self.buffw, self.bckw,
+                      self.readnoise, method=self.extract_method, sky_order=self.sky_order,
+                      profile_window=self.profile_window, reject_sigma=self.reject_sigma,
+                      diag_rows=range(0, n_rows, 200) if verbose else ())
+        flux_raw1 = res["flux"] # electrons per row
+        sky_raw1 = res["sky"] # sky electrons under the aperture per row
+        var_raw1 = res["var"] # variance of flux_raw1 (e-^2), including the sky-fit uncertainty
+        msg = (f"Extraction ({self.extract_method}): median S/N per row {np.nanmedian(flux_raw1 / np.sqrt(var_raw1)):.1f}, "
+               f"median sky under aperture {np.nanmedian(sky_raw1):.0f} e-, "
+               f"{int(np.isnan(flux_raw1).sum())} rows not extracted, {int(res['n_rejected'].sum())} pixels rejected")
+        print(msg)
+        with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
+            f.write(msg + "\n")
         
         if (verbose == True):
-            print("10 Flux Fit Parameters:")
-            with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                f.write("10 Flux Fit Parameters:"+"\n")
-            for i in range(0,4000,400):
-                a, mu, sigma, bck = sci1_fit[i]
-                print("Y:",i," a:",a," mu:",mu," sig:",sigma," bck:",bck)
-                with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                    f.write("Y:"+str(i)+" a:"+str(a)+" mu:"+str(mu)+" sig:"+str(sigma)+" bck:"+str(bck)+"\n")
-            print("Plotting Gauss cen values and Gauss sig values vs Y pix")
-            self.grapher.gauss_cen_plots(sci1_fit, cen_line, scinum)        
-        
-        # Make a plot of 20 evenly spaced pix
-        # Showing the data, the apertures and buffers as lines,
-        # And the over plotted G fit
-        if (verbose == True):
-            print("Making 20 aperture plots and aperature fit plots")
-            self.grapher.make_aperature_fit_plots(sci1_fit, sci_final_1, cen_line, scinum)
-            self.grapher.make_aperature_plots(sci1_fit, sci_final_1, cen_line, scinum)
-            
-        # Extract spectrum value from each y row
-        print("Extracting flux...")
-        # Now set down an aparature and get the flux in the center and another aperture to get the background level
-        
-        #mask out rows with nan gaussian fits
-        sci1_fit = np.array(sci1_fit)
-        valid_mask = ~np.isnan(sci1_fit[:, 0])  # 'a' values not NaN
-        indices = np.where(valid_mask)[0]
-        valid_fit = sci1_fit[valid_mask]
-        valid_cen = cen_line[valid_mask]
-        
-        a, mu, sigma, bck = valid_fit.T
-        c = valid_cen
-        
-        # Define fixed offset ranges from each center
-        x1_ap = c - self.appw
-        x2_ap = c + self.appw
-        x1_br = c + self.appw + self.buffw
-        x2_br = c + self.appw + self.buffw + self.bckw
-        
-        ap_flux = gaussian_integral_vec(a, mu, sigma, bck+1000, x1_ap, x2_ap) #adding 1000 to prevent negative bck values which cause the integral to sum the wrong part
-        bkg_right = gaussian_integral_vec(a, mu, sigma, bck+1000, x1_br, x2_br)
-        flux_valid = ap_flux - (((self.appw * 2) / self.bckw) * (bkg_right)) #note appw is not actual width, it is half width
-        
-        # Sky background is just the flat background level scaled to aperture width
-        sky_valid = bck * (2 * self.appw)
-        
-        flux_raw1 = np.full_like(cen_line, np.nan, dtype=np.float64)
-        flux_raw1[indices] = flux_valid
-        sky_raw1 = np.full_like(cen_line, np.nan, dtype=np.float64)
-        sky_raw1[indices] = sky_valid
-        
-        if (verbose == True):
-            # Plot output raw flux (We can remove CRs later)
             self.grapher.plot_raw_flux(flux_raw1, scinum)
-            for i in range(1, len(flux_valid), 10):
-                print(f"Flux fitted value: {flux_valid[i]}")
-                if (flux_valid[i] < 0):
-                    print(f"Parameters: {a[i]} {mu[i]} {sigma[i]} {bck[i]}")
-                    print(f"integrals: {ap_flux[i]} {bkg_right[i]}")
-                    print(f"widths: {self.appw*2} {self.bckw}")
-                    print(f"{c[i]}")
+            self.grapher.plot_extraction_rows(res["diag"], scinum)
         
     #--------------------------------------
     #wavelength calibration
@@ -225,10 +191,11 @@ class sci_modules:
         # evaluated at the right place (NaN > 0 is False, so failed rows drop too)
         n_rows = len(flux_raw1)
         flux_raw1 = np.array(flux_raw1)
-        ii = flux_raw1 > 0
+        ii = (flux_raw1 > 0) & np.isfinite(var_raw1)
         y_pix = np.arange(n_rows)[ii] # Detector row of each kept pixel
         flux_raw_cor1 = flux_raw1[ii]
         sky_raw1 = sky_raw1[ii]
+        err_raw1 = np.sqrt(var_raw1[ii]) # 1-sigma error of each kept pixel
 
         # Wavelength solution from the arc, extracted along this frame's trace
         sol = self.wavelength_solution(scinum, cen_line, verbose)
@@ -274,7 +241,7 @@ class sci_modules:
         if (verbose == True):
             print("v_helio:",v_helio,"km/s")
             self.grapher.plot_sci_lamcal(lam_at, y_pix, flux_raw_cor1, poly, v_helio, scinum)
-            rnErr = np.sqrt(flux_raw_cor1 + sky_raw1) # Poisson error per pixel
+            rnErr = err_raw1 # Extraction error per pixel
             self.grapher.plot_sci_lamcal_res(lam_at, y_pix, flux_raw_cor1, rnErr, poly, v_helio, scinum)
 
             # Dispersion over the full detector (wavelength decreases with row number)
@@ -307,6 +274,17 @@ class sci_modules:
         #save data to class dictionaries for easy loading
         self.flux_raw_cor1_dict[scinum] = flux_raw_cor1
         self.sky_raw_dict[scinum] = sky_raw1
+        self.err_dict[scinum] = err_raw1
+        
+        # Extracted (not normalized) spectrum of this frame
+        t = Table([wavelengths, flux_raw_cor1, err_raw1, sky_raw1, y_pix],
+                  names=("Lam", "Flux", "Sigma", "Sky", "Row"))
+        t["Flux"].unit = t["Sigma"].unit = t["Sky"].unit = "electron"
+        t["Lam"].unit = "Angstrom"
+        t.meta.update({"OBJECT": self.objid, "FRAME": scinum, "EXTRACT": self.extract_method,
+                       "VHELIO": (v_helio, "km/s, applied to Lam"), "WAVERMS": (sol.rms_kms, "km/s arc fit RMS"),
+                       "FLEXURE": (offset, "A subtracted from the arc solution")})
+        t.write(f"{self.target_dir}OUT/{self.objid}_{scinum}_extracted.fits", format="fits", overwrite=True)
         self.wavelengths_dict[scinum] = wavelengths
     
     def wavelength_solution(self, scinum, cen_line, verbose):
@@ -347,16 +325,16 @@ class sci_modules:
         
         flux_raw_cor1 = list(self.flux_raw_cor1_dict[scinum])
         wavelengths = list(self.wavelengths_dict[scinum])
-        sky_raw1 = list(self.sky_raw_dict[scinum])
+        err_raw1 = list(self.err_dict[scinum])
         
         # Remove 4 pixels from either edge to ensure bad chip pixels aren't affecting our fits
         flux_raw_cor1 = flux_raw_cor1[3:-4]
         wavelengths = wavelengths[3:-4]
-        sky_raw1 = sky_raw1[3:-4]
+        err_raw1 = err_raw1[3:-4]
         flux_masked = np.array(flux_raw_cor1.copy()) # Create a copy so we can still use flux_raw_cor1
         flux_raw_cor1_np = np.array(flux_raw_cor1, dtype=float)
         wavelengths_np = np.array(wavelengths, dtype=float)
-        sky_raw1 = np.array(sky_raw1)
+        err_raw1 = np.array(err_raw1)
         
         print(f"Estimating continuum on {scinum}")
         # Make each line have its own feature mask width to get a good mask
@@ -411,7 +389,7 @@ class sci_modules:
         
         fitted_values = []
         fitted_wavelengths = []
-        fitted_sky = []
+        fitted_err = []
         fitted_fluxes = []
         
         flux_masked_global = flux_raw_cor1_np.copy()
@@ -430,14 +408,14 @@ class sci_modules:
         include = Fnorm_Es <= rm_param
         
         results = fit_all_fluxes(Fnorm_Es, wavelengths_np, flux_masked, include, removed_index,
-                           flux_raw_cor1_np, flux_masked_global, sky_raw1, self.norm_line_width)
+                           flux_raw_cor1_np, flux_masked_global, err_raw1, self.norm_line_width)
         for row in results:        
             if np.isnan(row[0]):
                 continue
             else:
-                val, sky, flux, wave, f_keep, f_remove, l_keep, l_remove = row
+                val, err, flux, wave, f_keep, f_remove, l_keep, l_remove = row
                 fitted_values.append(val)
-                fitted_sky.append(sky)
+                fitted_err.append(err)
                 fitted_fluxes.append(flux)
                 fitted_wavelengths.append(wave)
                 if f_keep is not None:
@@ -465,7 +443,7 @@ class sci_modules:
             if verbose:
                 print("Masked values:", Fnorm[flagged])
 
-        sf_sm = np.sqrt(np.array(fitted_fluxes) + np.array(fitted_sky)) / smooth_cont
+        sf_sm = np.array(fitted_err) / smooth_cont # Extraction error, normalized
         
         if (verbose == True):
             print("Plotting Normalized Spectra")
@@ -671,7 +649,8 @@ class sci_modules:
         """
         Trace center (column) for every row: Gaussian fits per row around a coarse
         trace, then a polynomial of order self.trace_order fit to the Gaussian
-        centers with iterative 3-sigma clipping. Rounded to whole pixels.
+        centers with iterative 3-sigma clipping. Returns (cen_line rounded to whole
+        pixels, sub-pixel trace, per-row Gaussian fits [a, mu, sigma, bck]).
         """
         n_rows = sci_final_1.shape[0]
         rows = np.arange(n_rows)
@@ -702,7 +681,8 @@ class sci_modules:
                 break
             used = new_used
 
-        cen_line = np.round(poly(rows)).astype(int)
+        trace = poly(rows) # Sub-pixel trace center per row
+        cen_line = np.round(trace).astype(int)
 
         msg = (f"Trace: order {self.trace_order} polynomial, {used.sum()} of {n_rows} rows used, "
                f"residual scatter {scatter:.3f} pix, columns {cen_line.min()}-{cen_line.max()}")
@@ -710,4 +690,4 @@ class sci_modules:
         if (verbose == True):
             print("Trace polynomial coefficients:", poly.convert().coef)
 
-        return cen_line
+        return cen_line, trace, cen_fit

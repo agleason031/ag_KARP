@@ -57,6 +57,10 @@ order = 3      # polynomial order of the trace
 aperture = 20     # full aperture width, pixels
 buffer = 20       # gap between aperture and background, pixels per side
 background = 25   # background region width, pixels per side
+method = "optimal" # "optimal" (Horne 1986) or "boxcar"
+sky_order = 1      # polynomial order of the sky fit across the slit
+profile_window = 101 # rows over which the spatial profile is smoothed (optimal)
+reject_sigma = 5.0 # optimal: leave out pixels deviating by more than this
 
 [cosmic_rays]
 enabled = true

@@ -65,6 +65,10 @@ DEFAULTS = {
         "aperture": 20, # Full aperture width in pixels (an odd width w uses (w-1)/2 per side)
         "buffer": 20, # Gap between aperture and background region, pixels per side
         "background": 25, # Background region width, pixels per side
+        "method": "optimal", # "optimal" (Horne 1986) or "boxcar"
+        "sky_order": 1, # Polynomial order of the sky fit across the slit (per row)
+        "profile_window": 101, # Rows over which the spatial profile is smoothed (optimal)
+        "reject_sigma": 5.0, # Optimal extraction: leave out pixels deviating by more than this
     },
     "cosmic_rays": {
         "enabled": True, # L.A.Cosmic on each 2D science frame
@@ -142,6 +146,9 @@ def merge(user):
         for key, value in values.items():
             if value is REQUIRED:
                 raise ConfigError(f"[{section}] {key} is required")
+
+    if cfg["extraction"]["method"] not in ("optimal", "boxcar"):
+        raise ConfigError('[extraction] method should be "optimal" or "boxcar"')
 
     wc = cfg["wavecal"]
     if wc["order"] != "auto" and not (isinstance(wc["order"], int) and wc["order"] >= 1):

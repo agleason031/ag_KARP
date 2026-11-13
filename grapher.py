@@ -209,85 +209,32 @@ class grapher:
         plt.savefig(self.target_dir+"ImageNumber_"+str(scinum)+"/"+"cen_line_"+str(scinum)+".png")
         #print("len(cen_line)",len(cen_line))
         
-    def make_aperature_fit_plots(self, sci1_fit, sci_final_1, cen_line, scinum):
-        # Prepare save directory once
-        save_dir = os.path.join(self.target_dir, f"ImageNumber_{scinum}", f"E20Fits_{scinum}")
+    def plot_extraction_rows(self, diag, scinum):
+        """
+        For a sample of rows: the data across the slit, the sky fit, the aperture and
+        background windows, and (optimal extraction) the profile x flux + sky model.
+        """
+        save_dir = os.path.join(self.target_dir, f"ImageNumber_{scinum}", f"Extraction_{scinum}")
         os.makedirs(save_dir, exist_ok=True)
-    
-        # Loop through every 200th index up to 4000
-        for i in range(0, 4000, 200):
-            a, mu, sigma, bck = sci1_fit[i]
-            rowin = sci_final_1[i]
-            cen = cen_line[i]
-    
-            # Compute useful slice indices once
-            left = cen - self.appw - self.buffw - self.bckw
-            right = cen + self.appw + self.buffw + self.bckw + 1
-            fit_left = cen - self.appw
-            fit_right = cen + self.appw
-    
-            x_vals = np.arange(left, right)
-            y_vals = rowin[left:right]
-    
-            # Create figure and axes explicitly
+        for r, d in diag.items():
+            t = d["trace"]
             fig, ax = plt.subplots(figsize=(8, 6))
-            ax.step(x_vals, y_vals, where='mid', color="black")
-            ax.axvline(cen, color="black", linestyle="--")
-            
-            # Fit curve
-            x_fit = np.linspace(fit_left, fit_right, 300)
-            ax.plot(x_fit, G(x_fit, a, mu, sigma, bck), color="purple")
-            ax.set_xlim(fit_left, fit_right)
+            ax.step(d["x"], d["data"], where="mid", color="black", label="data")
+            ax.plot(d["x"], d["sky"], color="green", label="sky fit")
+            if "model" in d:
+                ax.step(d["model_x"], d["model"], where="mid", color="purple", label="optimal model")
+            ax.axvline(t, color="black", linestyle="--")
+            for edge, color in ((d["half"], "blue"), (d["inner"], "red"), (d["outer"], "red")):
+                ax.axvline(t - edge, color=color, linewidth=0.8)
+                ax.axvline(t + edge, color=color, linewidth=0.8)
+            title = f"Row {r}: boxcar {d['boxcar']:.0f} e-"
+            if "optimal" in d:
+                title += f", optimal {d['optimal']:.0f} e-"
+            ax.set_title(title)
             ax.set_xlabel("X pixels")
-            ax.set_ylabel("Counts (e⁻)")
-    
-            # Save and close
-            fig.tight_layout()
-            fig.savefig(os.path.join(save_dir, f"E20Fit{i}.png"))
-            plt.close(fig)  # Prevent accumulation of open figures
-    
-    def make_aperature_plots(self, sci1_fit, sci_final_1, cen_line, scinum):
-        save_dir = os.path.join(self.target_dir, f"ImageNumber_{scinum}", f"E20Data_{scinum}")
-        os.makedirs(save_dir, exist_ok=True)
-        
-        for i in range(0, 4000, 200):
-            a, mu, sigma, bck = sci1_fit[i]
-            rowin = sci_final_1[i]
-            center = cen_line[i]
-        
-            # Compute all x-range boundaries
-            left_edge = center - self.appw - self.buffw - self.bckw
-            right_edge = center + self.appw + self.buffw + self.bckw + 1
-        
-            x_vals = np.arange(left_edge, right_edge)
-            y_vals = rowin[left_edge:right_edge]
-        
-            # Create figure
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.step(x_vals, y_vals, where='mid', color="black")
-        
-            # Draw boundary lines
-            ax.axvline(center, color="black", linestyle="--")  # Center line
-            ax.axvline(center - self.appw, color="blue")         # Signal region start
-            ax.axvline(center + self.appw, color="blue")         # Signal region end
-            ax.axvline(center - self.appw - self.buffw, color="red")        # Buffer start
-            ax.axvline(center + self.appw + self.buffw, color="red")        # Buffer end
-            ax.axvline(left_edge, color="green")                           # Background start
-            ax.axvline(center + self.appw + self.buffw + self.bckw, color="green")  # Background end
-        
-            # Plot invisible Gaussian for centering (alpha=0)
-            x_fit = np.linspace(center - self.appw, center + self.appw, 300)
-            ax.plot(x_fit, G(x_fit, a, mu, sigma, bck), color="purple", alpha=0)
-        
-            # Set axis limits and labels
-            ax.set_xlim(left_edge - 1, right_edge + 1)
-            ax.set_xlabel("X pixels")
-            ax.set_ylabel("Counts (e⁻)")
-            ax.tick_params(labelsize=14)
-        
-            # Save and clean up
-            #fig.tight_layout()
-            fig.savefig(os.path.join(save_dir, f"EData{i}.png"))
+            ax.set_ylabel("Counts (e-)")
+            ax.legend()
+            fig.savefig(os.path.join(save_dir, f"Extraction_row{r}.png"))
             plt.close(fig)
             
     def plot_raw_flux(self, flux_raw1, scinum):

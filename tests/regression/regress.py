@@ -102,6 +102,7 @@ def snapshot(sm, out_dir):
             snap[f"sky_offsets_{n}"] = np.array([[l, offs.get(l, np.nan)] for l in sm.sky_lines])
         snap[f"flux_raw_{n}"] = np.asarray(sm.flux_raw_cor1_dict[n])
         snap[f"sky_raw_{n}"] = np.asarray(sm.sky_raw_dict[n])
+        snap[f"err_raw_{n}"] = np.asarray(sm.err_dict[n])
         snap[f"wavelengths_{n}"] = np.asarray(sm.wavelengths_dict[n])
         out = out_dir / "OUT" / f"{sm.objid}_{n}_OUT.fits"
         if out.exists():
@@ -136,7 +137,7 @@ def git_info():
 
 # (wavelength key, value keys) pairs compared on the reference wavelength grid
 SPECTRA = [
-    ("wavelengths_{n}", ["flux_raw_{n}", "sky_raw_{n}"]),
+    ("wavelengths_{n}", ["flux_raw_{n}", "sky_raw_{n}", "err_raw_{n}"]),
     ("norm_lam_{n}", ["norm_flux_{n}", "norm_sigma_{n}"]),
 ]
 

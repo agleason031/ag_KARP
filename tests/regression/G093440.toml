@@ -29,6 +29,10 @@ order = 3
 aperture = 20
 buffer = 20
 background = 25
+method = "optimal"
+sky_order = 1
+profile_window = 101
+reject_sigma = 5.0
 
 [cosmic_rays]
 enabled = true
