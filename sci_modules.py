@@ -17,7 +17,6 @@ from sci_tools import heliocentric_correction, fit_all_fluxes
 from joblib import Parallel, delayed
 import ccdproc
 import os
-import glob
 import numpy as np
 
 #-------------------------------------
@@ -490,116 +489,112 @@ class sci_modules:
 
 #---------------------------------------------
     
-    def combine_spectra(self, verbose):
-        jackknife = False
-        
+    def combine_spectra(self, scinums, verbose, jackknife=False):
+        """
+        Median-combine the normalized spectra of the given science images
+        (OUT/{objid}_{n}_OUT.fits) on the wavelength grid of the first one,
+        write the result to OUT/{objid}_combined.fits, and return the S/N at 5500 A.
+        With jackknife=True, also report the S/N with each image left out in turn.
+        """
         print("KARP is combining spectra")
-        with open(self.target_dir+"OUT/KARP_OUT_log.txt", "w") as fo:
+        log_path = self.target_dir+"OUT/KARP_OUT_log.txt"
+        with open(log_path, "w") as fo:
             fo.write("KARP is combining spectra\n")
-        
-        # Use glob to get everything in the folder
-        file_names = glob.glob(self.target_dir+"OUT/*OUT.fits")
+
+        # Only this object's spectra for the requested images
+        file_names = [f"{self.target_dir}OUT/{self.objid}_{n}_OUT.fits" for n in scinums]
+        missing = [f for f in file_names if not os.path.exists(f)]
+        if missing:
+            raise FileNotFoundError(f"Normalized spectra not found (run with spec_norm = true first): {missing}")
         if (verbose == True):
             print("Using these file names:",file_names)
-            with open(self.target_dir+"OUT/KARP_OUT_log.txt", "a") as fo:
+            with open(log_path, "a") as fo:
                 fo.write("Using these file names:"+str(file_names)+"\n")
-        
+
         # Use wavelength grid from first file
-        wave_ref = Table.read(file_names[0])["Lam"]
-        #initialize variables
-        gsig = []
-        med_comb = []
-        rms = 0
-        gwave = wave_ref
-        
-        def compute_snr_from_files(leaveout_indices):
-            nonlocal gsig
-            nonlocal med_comb
-            nonlocal rms
-            
-            # Leave out one file
-            selected_files = [f for j, f in enumerate(file_names) if j not in leaveout_indices]
-        
+        gwave = np.asarray(Table.read(file_names[0])["Lam"])
+
+        def combine(files):
+            """Median-combine `files` on gwave. Returns (med_comb, gsig, rms)."""
             # Interpolate onto reference grid
             gflux_interp = []
-            for fname in selected_files:
+            gsig = []
+            for fname in files:
                 t = Table.read(fname)
                 f = interp1d(t["Lam"], t["Flux"], bounds_error=False, fill_value=np.nan)
                 s = interp1d(t["Lam"], t["Sigma"], bounds_error=False, fill_value=np.nan)
-                gflux_interp.append(f(wave_ref))
-                gflux_array = np.array(gflux_interp)
-                gsig.append(s(wave_ref))
-        
+                gflux_interp.append(f(gwave))
+                gsig.append(s(gwave))
+
             # Stack and take median, ignoring NaNs
-            gflux_array = np.array(gflux_interp)
-            med_comb = np.nanmedian(gflux_array, axis=0)
-            
+            med_comb = np.nanmedian(np.array(gflux_interp), axis=0)
+
             # Remove zeroth order line and any remaning outliers from bad pixels
-            for i in range(len(gwave)):
-                if 5500 <= gwave[i] <= 5700:
-                    if med_comb[i] > 1.05:
-                        med_comb[i] = 1
-                        
-            for i in range(len(med_comb)):
-                if med_comb[i] > 1.25:
-                    med_comb[i] = 1
-        
+            med_comb[(gwave >= 5500) & (gwave <= 5700) & (med_comb > 1.05)] = 1
+            med_comb[med_comb > 1.25] = 1
+
             print("Computing RMS")
             # Compute RMS in 5450–5550
             mask = (gwave >= 5450) & (gwave <= 5550) & (~np.isnan(med_comb))
-            residuals_squared = (1 - med_comb[mask])**2
-            rms = np.sqrt(np.mean(residuals_squared))
-            
-            # Calculate and print SNR at 5500A
-            print("SNR at 5500:",1/rms)
-            with open(self.target_dir+"OUT/KARP_OUT_log.txt", "a") as fo:
-                fo.write("SNR at 5500:"+str(1/rms)+"\n")
-                if jackknife == True:
-                    print(f"with files {selected_files}")
-                    fo.write(f"with files {selected_files}\n")
-        
+            rms = np.sqrt(np.mean((1 - med_comb[mask])**2))
+            return med_comb, np.array(gsig), rms
+
         if jackknife == True:
-            n_files = len(file_names)
-            for i in range(n_files):
-                leaveout_indices = [i] #leaves out a single file and calculates SNR
-                compute_snr_from_files(leaveout_indices)
-        else: #do all files
-            leaveout_indices = []
-            compute_snr_from_files(leaveout_indices)
-        
-        gsig = np.array(gsig)
-        
+            # Leave out each file in turn and report the S/N, for comparison only
+            for i in range(len(file_names)):
+                selected_files = [f for j, f in enumerate(file_names) if j != i]
+                _, _, rms_i = combine(selected_files)
+                print("SNR at 5500:",1/rms_i,f"with files {selected_files}")
+                with open(log_path, "a") as fo:
+                    fo.write("SNR at 5500:"+str(1/rms_i)+"\n")
+                    fo.write(f"with files {selected_files}\n")
+
+        # The combined spectrum always uses all files
+        med_comb, gsig, rms = combine(file_names)
+
+        # Calculate and print SNR at 5500A
+        print("SNR at 5500:",1/rms)
+        with open(log_path, "a") as fo:
+            fo.write("SNR at 5500:"+str(1/rms)+"\n")
+
         # Calculate sig_final(lam), should be 1.2,1.3
         print("Calculating sig_final(lam)")
-        
+
         # Avoid division by zero or NaNs
         inv_var_array = np.where(gsig > 0, 1.0 / gsig**2, 0)
-    
+
         # Sum over spectra (axis=0 is spectra, axis=1 is wavelength, so we sum over 0)
         sum_sigw = np.sum(inv_var_array, axis=0)  # shape: (N_wavelength,)
-        
-        sig_w = []
-        for i in range(len(sum_sigw)):
-            sig_w.append(np.sqrt(1/sum_sigw[i]))
-        
+
+        with np.errstate(divide="ignore"): # Wavelengths with no valid sigma give inf
+            sig_w = np.sqrt(1/sum_sigw)
+
         # Get the closest sig_w to 5500 angstroms
         sig_w55_idx = np.argmin(np.abs(gwave - 5550))
         sig_w55 = sig_w[sig_w55_idx]
-        
+
         # Compute sig_final
-        sig_final = rms * np.array(sig_w)/sig_w55
-        
+        sig_final = rms * sig_w/sig_w55
+
         if (verbose == True):
             print("(RMS/sig_w55)",(rms/sig_w55))
-            with open(self.target_dir+"OUT/KARP_OUT_log.txt", "a") as fo:
+            with open(log_path, "a") as fo:
                 fo.write("(RMS/sig_w55)"+str(rms/sig_w55)+"\n")
-        
+
+        # Write the combined spectrum
+        out_path = f"{self.target_dir}OUT/{self.objid}_combined.fits"
+        t = Table([gwave, med_comb, sig_final], names=("Lam", "Flux", "Sigma"))
+        t.meta["SCINUMS"] = ",".join(str(n) for n in scinums)
+        t.meta["SNR5500"] = 1/rms
+        t.write(out_path, format="fits", overwrite=True)
+        print("Combined spectrum written to", out_path)
+
         self.grapher.plot_combined_norm(gwave, med_comb, sig_final, rms)
-        
+
         self.gwave = gwave
         self.med_comb = med_comb
         self.sig_final = sig_final
-        
+
         return 1/rms
     
 #-----------------------------------------

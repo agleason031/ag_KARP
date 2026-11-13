@@ -16,7 +16,6 @@ from astropy import log
 log.setLevel('ERROR')
 from scipy.optimize import differential_evolution
 from grapher import grapher
-from ccdproc import CCDData
 import numpy as np
 import argparse
 import warnings
@@ -89,11 +88,11 @@ def process_images(x):
     SNR = None # Only set when spectra are combined
     if skip_red == False or optimize == True:
         #get image filenames
-        blist = [CCDData.read(functions.format_fits_filename(dloc, b), unit='adu') for b in bim]
-        flist = [CCDData.read(functions.format_fits_filename(dloc, f), unit='adu') for f in fim]
+        bias_files = [functions.format_fits_filename(dloc, b) for b in bim]
+        flat_files = [functions.format_fits_filename(dloc, f) for f in fim]
         sci_list = [functions.format_fits_filename(dloc, s) for s in sim]
-    
-        masterbias, final_flat = sci_tools.get_cal_images(blist, flist, verbose, grapher) #verbose overwritten to false
+
+        masterbias, final_flat = sci_tools.get_cal_images(bias_files, flat_files, verbose, grapher)
         
         #individual image processing
         global_args = sci_list, masterbias, final_flat, verbose
@@ -109,7 +108,7 @@ def process_images(x):
     # G123456_61_OUT.txt, G123456_62_OUT.txt, G123456_63_OUT.txt
     # for normalized spectra for science images 61, 62,  and 63 for example
     if comb_spec == True or optimize == True:
-        SNR = sci_mods.combine_spectra(verbose)
+        SNR = sci_mods.combine_spectra(sim, verbose)
         
     if optimize == True:
         print(f"SNR {SNR}, APPW: {(sci_mods.appw*2)+1}, NormW: {sci_mods.norm_line_width}, NormBox: {sci_mods.norm_line_boxcar}")

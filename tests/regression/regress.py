@@ -94,7 +94,8 @@ def snapshot(g, run_dir):
     snap = {}
 
     # Calibration frames: stats + block-averaged thumbnails (full frames are 37 MB each).
-    masterbias, final_flat = sci_tools._calibration_cache[sm.objid]
+    # The cache is keyed by a fingerprint of the input frames; a run makes exactly one entry
+    (masterbias, final_flat), = sci_tools._calibration_cache.values()
     for name, img in (("masterbias", np.asarray(masterbias)), ("final_flat", np.asarray(final_flat))):
         snap[f"{name}_thumb"] = block_mean(img)
         snap[f"{name}_stats"] = np.array([np.nanmedian(img), np.nanmean(img), np.nanstd(img)])

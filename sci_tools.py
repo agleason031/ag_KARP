@@ -18,6 +18,7 @@ from numba import njit, prange
 import numpy as np
 import ccdproc
 import csv
+import hashlib
 import inspect
 import os
 
@@ -58,24 +59,44 @@ def heliocentric_correction(objRA, objDEC, otime):
     correction = correction.replace('km / s', '')
     return(float(correction))
 
+def calibration_key(bias_files, flat_files):
+    """
+    Short fingerprint of the bias and flat input frames (path, size, modification time).
+    Saved calibrations are only reused when this matches, so changing the frame
+    ranges or the files themselves forces the masters to be rebuilt.
+    """
+    h = hashlib.sha1()
+    for kind, files in (("bias", bias_files), ("flat", flat_files)):
+        h.update(kind.encode())
+        for f in files:
+            st = os.stat(f)
+            h.update(f"{os.path.abspath(f)}|{st.st_size}|{st.st_mtime_ns}\n".encode())
+    return h.hexdigest()[:16]
+
 #creates and returns bias and flat images
-def get_cal_images(blist, flist, verbose, grapher):
-    #get images from cache if already created
-    key = grapher.objid
+def get_cal_images(bias_files, flat_files, verbose, grapher):
+    #get images from cache if already created from the same input frames
+    key = calibration_key(bias_files, flat_files)
     bias_path = grapher.target_dir + "OUT/" + grapher.objid + "_master_bias.fits"
     flat_path = grapher.target_dir + "OUT/" + grapher.objid + "_final_flat.fits"
-    
+
     if key in _calibration_cache:
         return _calibration_cache[key]
-    
-    # ✅ Load from disk if both exist
+
+    # Load from disk if both exist and were made from these same input frames
     if os.path.exists(bias_path) and os.path.exists(flat_path):
-        print("Loading disk calibration files...")
         masterbias = CCDData.read(bias_path, unit='adu')
         final_flat = CCDData.read(flat_path, unit='adu')
-        _calibration_cache[key] = (masterbias, final_flat)
-        return masterbias, final_flat
-    
+        if masterbias.meta.get("KARPCAL") == key and final_flat.meta.get("KARPCAL") == key:
+            print("Loading disk calibration files...")
+            final_flat = np.asarray(final_flat.data) # Same type as a freshly made flat
+            _calibration_cache[key] = (masterbias, final_flat)
+            return masterbias, final_flat
+        print("Calibration files on disk were made from different frames, rebuilding them")
+
+    blist = [CCDData.read(f, unit='adu') for f in bias_files]
+    flist = [CCDData.read(f, unit='adu') for f in flat_files]
+
     # Make a master bias from the input bias image
     print("Making Master Bias")
     masterbias = ccdproc.combine(blist, method='median', unit='adu',sigma_clip=True, sigma_clip_low_thresh=5, sigma_clip_high_thresh=5,sigma_clip_func=np.ma.median, sigma_clip_dev_func=mad_std,mem_limit=350e6)
@@ -114,17 +135,15 @@ def get_cal_images(blist, flist, verbose, grapher):
             final_flat[yOther1[k], xOther1[i]] = 1 # Set the flat value of these small areas to 1
             # Note that this minimally affects the final flat as these areas are relativly small
             # So we still get a representative final flat image
-    
-    for i in range(len(xOther1)):
-        for k in range(len(yOther1)):
-            final_flat[yOther1[k], xOther1[i]] = 1
-            
+
     if (verbose == True):
         grapher.plot_image(masterbias, get_var_name(masterbias))
         grapher.plot_image(final_flat, get_var_name(final_flat))
-    
+
+    # Record which input frames these were made from, so stale files aren't reused later
+    masterbias.meta["KARPCAL"] = (key, "KARP fingerprint of bias+flat input frames")
     masterbias.write(bias_path, overwrite=True)
-    CCDData(final_flat, unit="adu").write(flat_path, overwrite=True)
+    CCDData(final_flat, unit="adu", meta={"KARPCAL": (key, "KARP fingerprint of bias+flat input frames")}).write(flat_path, overwrite=True)
     
     print("Final Flat Made")
     
