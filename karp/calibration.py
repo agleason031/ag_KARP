@@ -220,7 +220,7 @@ def master_calibrations(bias_files, flat_files, det, flat_cfg, out, plots):
 
     if plots.verbose:
         plots.image(bias, "master bias", out.diagnostic("master_bias.png"))
-        plots.image(flat, "final flat", out.diagnostic("final_flat.png"))
+        plots.image(flat, "final flat", out.diagnostic("final_flat.png"), units="relative response")
 
     # Record which input frames these were made from, so stale files aren't reused later
     stamp = (key, "KARP fingerprint of bias+flat input frames")

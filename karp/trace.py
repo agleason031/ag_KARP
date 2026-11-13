@@ -125,7 +125,7 @@ def fit_trace(image, aperture_half, buffer, background, order, binning, start_co
     Trace center (column) for every row. aperture_half, buffer, background: aperture half-width, buffer
     and background widths in columns (as for the extraction); order: polynomial order.
     Returns (trace rounded to whole columns, sub-pixel trace, per-row Gaussian fits
-    [amplitude, center, sigma, background]).
+    [amplitude, center, sigma, background], rows used in the final polynomial fit).
     """
     n_rows = image.shape[0]
     rows = np.arange(n_rows)
@@ -158,4 +158,4 @@ def fit_trace(image, aperture_half, buffer, background, order, binning, start_co
     log.info(f"Trace: order {order} polynomial, {used.sum()} of {n_rows} rows used, "
              f"residual scatter {scatter:.3f} pix, columns {columns.min()}-{columns.max()}")
     log.debug(f"Trace polynomial coefficients: {poly.convert().coef}")
-    return columns, trace, fits
+    return columns, trace, fits, used

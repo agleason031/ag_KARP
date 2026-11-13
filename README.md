@@ -77,10 +77,12 @@ Each object gets its own folder, `output_dir/<OBJNAME>/`:
 KARP_log.txt                 full log of the run (rewritten each run)
 KARP_run_info.txt            the frames and every setting used
 calib/                       master bias, final flat; a standard's sensitivity function
-diagnostics/                 continuum and sensitivity fits, calibration images (verbose)
-diagnostics/frame_<n>/       per frame: trace, wavelength solution (wavecal_lines.txt and
-                             residuals); with verbose also the 2D image, trace fits,
-                             extraction cuts and the frame's spectrum
+diagnostics/                 frames.png (each frame / combined), continuum.png, sensfunc.png;
+                             with verbose also the master bias and flat and zoomed views
+diagnostics/frame_<n>/       per frame: trace.png (fit, residuals, profile width), wavecal.png
+                             (arc with identified lines, residuals), wavecal_lines.txt,
+                             spectrum.png (flux, error, sky); with verbose also image.png (the
+                             frame with its extraction windows) and cuts across the slit
 ```
 
 | File | Contents |

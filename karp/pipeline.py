@@ -174,16 +174,16 @@ class ObjectReduction:
                 satlevel=det["full_well"], verbose=False)
             log.info(f"Cosmic rays: {int(cr_mask.sum())} pixels cleaned in image {frame}")
         if self.verbose:
-            self.plots.image(flat_fielded, f"Frame {frame}, calibrated", self.out.frame_file(frame, "image.png"))
             CCDData(flat_fielded, unit="electron").write(self.out.frame_file(frame, "image.fits"), overwrite=True)
         variance = variance_image(image, flat, det["readnoise"]) # e-^2 per pixel
 
         # Trace
-        columns, trace, trace_fits = fit_trace(image, self.aperture_half, self.buffer_cols, self.background_cols,
-                                               self.cfg["trace"]["order"], self.binning, self.trace_start)
-        self.plots.trace(columns, frame)
+        columns, trace, trace_fits, trace_used = fit_trace(
+            image, self.aperture_half, self.buffer_cols, self.background_cols, self.cfg["trace"]["order"],
+            self.binning, self.trace_start)
+        self.plots.trace(trace_fits, trace, trace_used, frame)
         if self.verbose:
-            self.plots.trace_fits(trace_fits, columns, frame)
+            self.plots.frame_image(image, trace, self.aperture_half, self.buffer_cols, self.background_cols, frame)
 
         # Extraction
         method = self.cfg["extraction"]["method"]
@@ -198,7 +198,6 @@ class ObjectReduction:
                  f"median sky under aperture {np.nanmedian(sky):.0f} e-, "
                  f"{int(np.isnan(flux).sum())} rows not extracted, {int(res['n_rejected'].sum())} pixels rejected")
         if self.verbose:
-            self.plots.extracted_flux(flux, frame)
             self.plots.extraction_rows(res["diag"], frame)
 
         # Keep rows where the extraction worked, with their detector row so the
@@ -215,11 +214,8 @@ class ObjectReduction:
         wave = (sol.poly(np.asarray(rows, dtype=float)) - offset) * (1 + v_helio / C_KMS)
         log.debug(f"Heliocentric correction for image {frame}: {v_helio:+.3f} km/s")
 
-        used = sol.used
-        self.plots.arc_residuals(sol.rows[used], sol.residuals[used], sol.residuals[used] / sol.lam[used] * C_KMS,
-                                 frame)
+        self.plots.frame_spectrum(wave, flux, sigma, sky, frame)
         if self.verbose:
-            self.plots.frame_spectrum(wave, flux, sigma, frame)
             ends = (sol.poly(np.array([0.0, n_rows - 1.0])) - offset) * (1 + v_helio / C_KMS)
             log.debug(f"Wavelength range {ends.min():.2f}-{ends.max():.2f} A, "
                       f"mean dispersion {abs(ends[0] - ends[1]) / n_rows:.4f} A/pix")
@@ -248,6 +244,7 @@ class ObjectReduction:
         log.info(sol.summary())
         for note in sol.notes:
             log.debug("  " + note)
+        self.plots.wavecal(sol, arc_spec, frame)
         with open(self.out.frame_file(frame, "wavecal_lines.txt"), "w") as f:
             f.write(f"# {sol.summary()}\n")
             f.write(f"# arcs {', '.join(os.path.basename(a) for a in self.group.arcs)}, "
@@ -333,7 +330,8 @@ class ObjectReduction:
         t.meta["SNR5500"] = (snr5500, "median Flux/Sigma, 5450-5550 A")
         t.write(path, format="fits", overwrite=True)
         log.info(f"Combined spectrum written to {path}")
-        self.plots.combined(comb.wave, comb.flux, comb.sigma, snr5500)
+        self.plots.combined(comb, snr5500)
+        self.plots.frame_comparison(comb)
 
         self.combined, self.snr, self.snr_bands = comb, snr5500, bands
         return snr5500
@@ -500,6 +498,6 @@ class ObjectReduction:
                        "SENSRMS": (sens["rms"], "mag, RMS of the sensitivity fit"),
                        "FLUXNOTE": "shape reliable; absolute level depends on slit losses and transparency"})
         t.write(self.out.product("fluxed.fits"), format="fits", overwrite=True)
-        self.plots.fluxed(comb.wave, flux, sig, valid, sens["ref_flux"] if is_standard else None)
+        self.plots.fluxed(comb.wave, flux, sig, valid, extrap, sens["ref_flux"] if is_standard else None)
         self.fluxed = (flux, sig)
         return flux, sig

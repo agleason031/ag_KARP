@@ -52,6 +52,7 @@ class Combined:
     ref_frame: int # frames are on this frame's wavelength grid and flux scale
     frames: list = field(default_factory=list)
     n_rejected: dict = field(default_factory=dict) # frame -> pixels rejected ("weighted")
+    scaled: dict = field(default_factory=dict) # frame -> (flux, sigma) scaled onto wave (this run only)
 
 
 def snr_in(wave, flux, sigma, mask, lam_min, lam_max):
@@ -169,4 +170,4 @@ def combine_frames(frames, scale="smooth", scale_order=2, method="weighted", rej
     log.info(f"Combined {len(nums)} frames: {desc}")
     if method == "weighted":
         log.info("Pixels rejected per frame: " + ", ".join(f"{n}: {r}" for n, r in zip(nums, n_rej)))
-    return Combined(wave, flux, sigma, mask, ref, nums, dict(zip(nums, (int(r) for r in n_rej))))
+    return Combined(wave, flux, sigma, mask, ref, nums, dict(zip(nums, (int(r) for r in n_rej))), on_grid)
