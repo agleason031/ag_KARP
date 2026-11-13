@@ -195,164 +195,117 @@ class sci_modules:
         
         pixc = [250,295,765,925,953,1275,1330,1396,1480,2870,3355,3421,3612,3780]
         lam = [6416.31,6384.72,6032.13,5912.09,5888.58,5650.70,5606.73,5558.70,5495.87,4510.73,4200.67,4158.59,4044.42,3948.97]
-        
+
         # Lambda calibration
         print("Fitting lambda Gaussians...")
-        
-        lam_width = 8 # Width to fit wavelength gaussians
-        lam_fit = [] # Stores fit parameters as [a, mu, sig]
-        lam_fit_linenum = [] # Succesfully fitted line wavelength
-        
-        flux_raw1 = np.array(flux_raw1) 
+
+        # Drop rows with failed or non-positive extractions, but remember the
+        # detector row of every kept pixel so the wavelength solution is
+        # evaluated at the right place (NaN > 0 is False, so failed rows drop too)
+        n_rows = len(flux_raw1)
+        flux_raw1 = np.array(flux_raw1)
         ii = flux_raw1 > 0
+        y_pix = np.arange(n_rows)[ii] # Detector row of each kept pixel
         flux_raw_cor1 = flux_raw1[ii]
         sky_raw1 = sky_raw1[ii]
-        
+
         if scinum in self.lam_fit_dict:
             lam_fit = self.lam_fit_dict[scinum]
             lam_fit_linenum = self.lam_fit_linenum_dict[scinum]
         else:
-            for i in range(len(pixc)):
-                # We want the flux values around pixc
-                a_col = self.argon[:, cen_line[i]] # Get every column value that is in cen_line
-                flux_vals = a_col[(pixc[i]-lam_width) : (pixc[i]+lam_width)] # Get argon values from the same pixels
-                # We want locations along the y
-                loc_vals = np.arange((pixc[i]-lam_width),(pixc[i]+lam_width)) # fit to y pixel values of 5 of the center of the argon wavelength
-               
-                p0 = [np.max(flux_vals), pixc[i], 2.0, 0] # Guess that the gussian peak is the max height
-                bounds = [(0,0,1,-100),(np.inf,np.inf,np.inf,np.inf)] # a, mu, sig, bck
-                try:
-                    # Curve fit takes, x (locations), y (values)
-                    popt, _ = curve_fit(G, loc_vals, flux_vals, p0=p0, bounds=bounds, maxfev=1000) # ignore covariance matrix spat out from curve_fit
-                    lam_fit.append(popt)  # [a, mu, sigma, c] returend from curve_fit
-                    lam_fit_linenum.append(lam[i]) # Wavelength values that where succesfully fit
-                except RuntimeError:
-                    if (verbose == True):
-                        print("Curve fit failed at maxfev=1000")
-                        print("Trying to fit:",lam[i],pixc[i])
-                        print("p0 is:",p0)
-                        print("Now trying with maxfev=10000")
-                    lam_width = 11
-                    flux_vals = a_col[(pixc[i]-lam_width) : (pixc[i]+lam_width)] # Get argon values from the same pixels
-                    loc_vals = np.arange((pixc[i]-lam_width),(pixc[i]+lam_width)) # fit to y pixel values of 5 of the center of the argon wavelength
-                   
-                    p0 = [np.max(flux_vals), pixc[i], 2.0, 0] # Guess that the gussian peak is the max height
-                    popt, _ = curve_fit(G, loc_vals, flux_vals, p0=p0, bounds=bounds, maxfev=10000) # ignore covariance matrix spat out from curve_fit
-                    lam_fit.append(popt)  # [a, mu, sigma, c] returend from curve_fit
-                    lam_fit_linenum.append(lam[i]) # Wavelength values that where succesfully fit
-            
+            lam_fit = [] # Fit parameters [a, mu, sig, bck] of each successfully fit line
+            lam_fit_linenum = [] # Lab wavelength of each successfully fit line
+            for p, l in zip(pixc, lam):
+                # Use the arc column under the trace at this line's row
+                popt = self.fit_arc_line(cen_line[p], p, verbose)
+                if popt is None:
+                    print(f"Arc line {l} A near pixel {p} could not be fit, skipping it")
+                    continue
+                lam_fit.append(popt)
+                lam_fit_linenum.append(l)
+
             if (verbose == True):
                 print("KARP fitted ", len(lam_fit), " lines")
                 print("Argon Lines Fit Parameters:")
                 with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
                     f.write("KARP fitted"+str(len(lam_fit))+"lines\n")
-                    f.write("Argon Lines Fit Parameters:\n")                
-                
+                    f.write("Argon Lines Fit Parameters:\n")
+
                 s_lsp = [] # Sigmas of the lam line fits for the line split function
                 for i in range(len(lam_fit)):
                     a, mu, sigma, bck = lam_fit[i]
                     s_lsp.append(sigma)
-                    print("Lam Line Number:",i," lam:",lam[i]," a:",a," mu:",mu," sig:",sigma," bck:",bck)
+                    print("Lam Line Number:",i," lam:",lam_fit_linenum[i]," a:",a," mu:",mu," sig:",sigma," bck:",bck)
                     with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                        f.write("Lam Line Number:"+str(i)+" lam:"+str(lam[i])+" a:"+str(a)+" mu:"+str(mu)+" sig:"+str(sigma)+" bck:"+str(bck)+"\n")
-                
+                        f.write("Lam Line Number:"+str(i)+" lam:"+str(lam_fit_linenum[i])+" a:"+str(a)+" mu:"+str(mu)+" sig:"+str(sigma)+" bck:"+str(bck)+"\n")
+
                 print("Line Split Function:",np.mean(s_lsp))
                 print("(avg of sig of line fits)")
                 with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
                     f.write("Line Split Function:"+str(np.mean(s_lsp))+"\n")
-                    f.write("(avg of sig of line fits)\n") 
-                
+                    f.write("(avg of sig of line fits)\n")
+
             self.lam_fit_dict[scinum] = lam_fit
             self.lam_fit_linenum_dict[scinum] = lam_fit_linenum
-            
-        cfits = [fit[1] for fit in lam_fit] #gets centers of each lambda fit
-        
-        # Fit a cubic poly nomial with cfits (actual line centers)
-        # Fitting c fits (actual line centers in pixels) to lam_fit_linenum (successfully fit line wavelength values from lam)
+
+        cfits = np.array([fit[1] for fit in lam_fit]) # Fitted line centers in pixels
+        lam_ok = np.array(lam_fit_linenum) # Lab wavelengths of the same lines
+
+        # Fit a cubic polynomial: line centers (pixels, scaled by 1/2000) -> lab wavelength
         print("Fitting cubic polynomial")
-        cfits_red = []
-        for i in range(len(cfits)):
-            cfits_red.append(cfits[i]/2000)
-        y_lam_fit = np.polyfit(cfits_red,lam_fit_linenum,3)    
-        #print(a,b,c,d) # As a*x^3+bx^2+c*x+d = lam(y)
-        y_pix = np.arange(0,len(flux_raw_cor1),1)
-        
-        # Store y_lam(y_pix)=wavelengths
-        # Heliocentric correction here as well (Should be carried over from y_lam)
-        wavelengths = y_lam(y_pix, y_lam_fit, self.v_helio) # Wavelength of each pixel
-        
+        y_lam_fit = np.polyfit(cfits / 2000, lam_ok, 3)
+
+        # Wavelength of each kept pixel, with heliocentric correction
+        wavelengths = y_lam(y_pix, y_lam_fit, self.v_helio)
+
         if (verbose == True):
             print("v_helio:",self.v_helio,"km/s") # -4 km/s for G093440
             self.grapher.plot_sci_lamcal(y_lam, y_pix, flux_raw_cor1, y_lam_fit, self.v_helio, scinum)
-    
-        # Lambda calibration graph
-        del_lam = [] # Lam_fit - Lam_cal
+
+        # Arc solution residuals: lab wavelength minus the fit at the fitted center.
+        # Evaluated without the heliocentric correction, since the arc lines are at rest.
+        del_lam = lam_ok - y_lam(cfits, y_lam_fit, 0.0)
+        res_vel = (del_lam / lam_ok) * 3*10**5 # Residuals in velocity space
+
         if (verbose == True):
-            print("Calculating RMS A")
-            print("len(cfits)",len(cfits))
-            print("len(lam):",len(lam))
-        for i in range(len(lam)):
-            # cfits is the center fit value in pixels
-            if (verbose == True):
-                print(cfits[i])
-            if not np.isnan(cfits[i]):
-                del_lam.append(float(lam[i])-float(y_lam(cfits[i], y_lam_fit, self.v_helio)))  # The wavelength value we want to fit the line to MINUS the value our fit says that that line is at
-            else:
-                print("NAN here")
-            #print(offset[i])
-            
-        if (verbose == True):
-            # Put print RMS here
-            dlS = []
-            for i in range(len(del_lam)):
-                dlS.append(del_lam[i]**2)
-            print("RMS A:",np.sqrt(np.mean(dlS)))
+            print("RMS A:",np.sqrt(np.mean(del_lam**2)))
             with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-                f.write("RMS A:"+str(np.sqrt(np.mean(dlS)))+"\n")
+                f.write("RMS A:"+str(np.sqrt(np.mean(del_lam**2)))+"\n")
         print("Calculating RMS km/s")
-        dlols = [] # Delta lambda over lambda
-        for i in range(len(del_lam)):
-            dlols.append(float(del_lam[i]/lam[i])**2)
-        
-        print("RMS km/s:",np.sqrt(np.mean(dlols))*3*10**5)
+        rms_kms = np.sqrt(np.mean(res_vel**2))
+        print("RMS km/s:",rms_kms)
         with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
-            f.write("RMS km/s:"+str(np.sqrt(np.mean(dlols))*3*10**5)+"\n")
+            f.write("RMS km/s:"+str(rms_kms)+"\n")
         # Should be ~10 km/s 0.1 A or even 0.05 A
-        
+
         if (verbose == True):
-            rnErr = []
-            res_vel = [] # Residuals in velocity space
-            for i in range(len(lam)):
-                print("Angstrom:",lam[i]," sqrt(flux+sky):",(float(flux_raw_cor1[i]+sky_raw1[i])**(1/2))) # Print the RMS error
-                print("km/s:",(del_lam[i]/lam[i])*3*10**5," sqrt(flux+sky):",(float(flux_raw_cor1[i]+sky_raw1[i])**(1/2))) # Print the RMS error
-                res_vel.append((del_lam[i]/lam[i])*3*10**5)
+            for l, dl, rv in zip(lam_ok, del_lam, res_vel):
+                print("Angstrom:",l," residual A:",dl," km/s:",rv)
             print("Plotting Residuals...")
-            
-            for i in range(len(flux_raw_cor1)): # For our corrected fluxes
-                rnErr.append(float(flux_raw_cor1[i]+sky_raw1[i])**(1/2))
-            
+
+            rnErr = np.sqrt(flux_raw_cor1 + sky_raw1) # Poisson error per pixel
+
             #make lamcalres plots
-            self.grapher.lam_cal_res(pixc, del_lam, scinum)
-            self.grapher.lam_cal_res_vel(pixc, res_vel, scinum)
-            
+            self.grapher.lam_cal_res(cfits, del_lam, scinum)
+            self.grapher.lam_cal_res_vel(cfits, res_vel, scinum)
+
             print("Mean Wavelength residual (delLAM):",np.mean(del_lam))
             print("Mean Velocity residual (delVEL):",np.mean(res_vel))
             with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
                 f.write("Mean Wavelength residual (delLAM):"+str(np.mean(del_lam))+"\n")
                 f.write("Mean Velocity residual (delVEL):"+str(np.mean(res_vel))+"\n")
-        
+
             self.grapher.plot_sci_lamcal_res(y_lam, y_pix, flux_raw_cor1, rnErr, y_lam_fit, self.v_helio, scinum)
-        
-            # Print dispersion, as (number of angstroms we go over/number of pixels (4096))
-            # Recall that our lam is fit inverse of our pixels, ie 246 pix = 6000 Angstroms
-            lam_out_max = y_lam(np.min(y_pix), y_lam_fit, self.v_helio) # Max wavelength as a function of pixel, ie the wavelength fit to the last pixel
-            lam_out_min = y_lam(np.max(y_pix), y_lam_fit, self.v_helio) # Minimum wavelength as a function of pixel, ie the wavelength fit to the first pixel
-            
-            dispersion = (lam_out_max-lam_out_min)/len(y_pix)
+
+            # Dispersion over the full detector (wavelength decreases with row number)
+            lam_out_max = y_lam(0, y_lam_fit, self.v_helio) # Wavelength at the first row
+            lam_out_min = y_lam(n_rows - 1, y_lam_fit, self.v_helio) # Wavelength at the last row
+
+            dispersion = (lam_out_max-lam_out_min)/n_rows
             print("lam_out_max:",lam_out_max)
             print("lam_out_min:",lam_out_min)
             print("Dispersion: ",dispersion, " Angstroms/pix")
-        
+
             with open(self.target_dir+"ImageNumber_"+str(scinum)+"/KARP_log.txt", "a") as f:
                 f.write("lam_out_max:"+str(lam_out_max)+"\n")
                 f.write("lam_out_min:"+str(lam_out_min)+"\n")
@@ -377,9 +330,31 @@ class sci_modules:
         self.sky_raw_dict[scinum] = sky_raw1
         self.wavelengths_dict[scinum] = wavelengths
     
+    def fit_arc_line(self, col, pix, verbose):
+        """
+        Fit a Gaussian to one arc line in column `col` of the argon frame,
+        near detector row `pix`. Tries a narrow window first, then a wider one.
+        Returns [a, mu, sigma, bck], or None if both attempts fail.
+        """
+        a_col = self.argon[:, col]
+        for width, maxfev in ((8, 1000), (11, 10000)):
+            loc_vals = np.arange(pix - width, pix + width)
+            flux_vals = a_col[pix - width : pix + width]
+            bck0 = np.median(flux_vals) # Arc is not bias subtracted, so the floor is ~bias level
+            p0 = [max(np.max(flux_vals) - bck0, 1.0), pix, 2.0, bck0]
+            # Keep the center inside the window so the fit can't wander off to another row
+            bounds = [(0, pix - width, 1, -100), (np.inf, pix + width, width, np.inf)] # a, mu, sig, bck
+            try:
+                popt, _ = curve_fit(G, loc_vals, flux_vals, p0=p0, bounds=bounds, maxfev=maxfev)
+                return popt
+            except RuntimeError:
+                if (verbose == True):
+                    print(f"Arc fit failed near pixel {pix} with half-width {width}, maxfev={maxfev}")
+        return None
+
 #-----------------------------------------
 
-    def normalization(self, scinum, verbose, optimize):        
+    def normalization(self, scinum, verbose, optimize):
         # Mask out deep absorption features
         # Deep features in order of ascending wavelength, in angstroms
         # We have spectra down to Lam = 3780 and up to 6600 angstroms
