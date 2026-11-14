@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]  # SPDX license field
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,9 @@ dynamic = ["version"]
 description = "KARP: KOSMOS Astronomical Reduction Pipeline for long-slit spectra from KOSMOS (APO 3.5 m)"
 readme = "README.md"
 requires-python = ">=3.11"  # tomllib
-authors = [{ name = "Chase L. Smith" }, { name = "Max Moe" }, { name = "Alex Gleason" }]
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "karp/data/extinction/LICENSE-pykosmos.txt"]
+authors = [{ name = "Alex Gleason" }]
 dependencies = [
     "numpy",
     "scipy",
@@ -24,6 +26,9 @@ dependencies = [
 sound = ["pygame"]  # [output] sound = true
 test = ["pytest"]
 
+[project.urls]
+Repository = "https://github.com/agleason031/ag_KARP"
+
 [project.scripts]
 karp = "karp.cli:main"
 
@@ -35,3 +40,7 @@ karp = ["data/*/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "karp.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+pythonpath = ["."]

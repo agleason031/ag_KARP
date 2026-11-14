@@ -62,7 +62,9 @@ def run_pipeline(overrides=None):
     from karp import cli
     settings = {"paths.raw_dir": str(DATA), "paths.output_dir": str(run_dir)}
     settings.update(overrides or {})
-    results = cli.main([str(CONFIG)], overrides=settings)
+    results, failures = cli.run(str(CONFIG), overrides=settings)
+    if failures:
+        sys.exit(f"KARP failed: {failures}")
     if list(results) != [OBJECT]:
         sys.exit(f"Expected one object {OBJECT}, got {list(results)}")
     return results[OBJECT], run_dir / OBJECT

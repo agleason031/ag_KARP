@@ -84,7 +84,8 @@ def load_reference(disperser, path=None):
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"No reference wavelength solution for disperser {disperser!r} ({path}). "
-            "Make one with 'python wavecal.py make-reference' or set [wavecal] reference.")
+            "Make one from a table of identified arc lines with scripts/make_wavecal_reference.py "
+            "(see the README, 'Wavelength calibration data'), or set [wavecal] reference.")
     with open(path) as f:
         ref = json.load(f)
     ref["path"] = path

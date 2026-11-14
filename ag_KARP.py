@@ -7,7 +7,9 @@ KARP: KOSMOS Astronomical Reduction Pipeline.
 
 Same as `python -m karp` or the `karp` command; the code is in the karp/ package.
 """
+import sys
+
 from karp.cli import main
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

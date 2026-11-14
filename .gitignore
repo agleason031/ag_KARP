@@ -3,12 +3,16 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.pytest_cache/
 venv/
 build/
 dist/
 
 # Data and pipeline outputs (kept on disk, not in git)
 test_data/
+observations/*
+!observations/README.md
+reductions/
 *.fits
 *.fit
 *.fz

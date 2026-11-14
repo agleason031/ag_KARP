@@ -3,14 +3,18 @@
 #   python -m karp example_config.toml --list   # check which frames KARP will use
 #   python -m karp example_config.toml          # reduce (or: karp ..., python ag_KARP.py ...)
 #
-# Only [paths] is required. Every other setting below is shown with its default
-# (see karp/config.py); delete or comment out anything you don't need to change.
+# Only [paths] raw_dir and output_dir are required. Every other setting below is shown with its
+# default (see karp/config.py), except [paths] layout; delete or comment out anything you don't
+# need to change.
 # Settings that default to "not set" are shown commented out.
 
 [paths]
-raw_dir = "path/to/raw/night"      # Raw KOSMOS frames (k.NNNN.fits)
-output_dir = "path/to/reductions"  # Each object goes in output_dir/<OBJNAME>/
-pattern = "*.fits"                 # "**/*.fits" also searches subdirectories
+raw_dir = "observations"   # Raw KOSMOS frames (see observations/README.md)
+output_dir = "reductions"  # Each object goes in output_dir/<name>/
+layout = "objects"         # "objects": one subdirectory of raw_dir per object, named after it;
+                           #   subdirectories without science frames hold shared calibrations
+                           # "night" (default): all frames in raw_dir, objects named by OBJNAME
+pattern = "*.fits"         # "**/*.fits" also searches subdirectories ("objects" always does)
 
 [frames]
 # KARP sorts frames by their headers: IMAGETYP (Bias / Flat / Object / Comp),
@@ -20,7 +24,7 @@ pattern = "*.fits"                 # "**/*.fits" also searches subdirectories
 # combination, the arc nearest in time plus repeats taken within an hour of it).
 # Use these to narrow or override that (frame numbers are the digits at the end
 # of the file name, k.0061.fits -> 61).
-objects = []      # e.g. ["G093440"]; empty = every object found
+objects = []      # e.g. ["G093440"] (OBJNAME, or subdirectory with layout = "objects"); empty = all
 science = []      # e.g. [61, 62, 63]; empty = all science frames
 bias = []         # empty = automatic
 flat = []         # empty = automatic (no flats found: no flat-field correction)
@@ -29,7 +33,8 @@ exclude = []      # frames never to use, e.g. [9]
 
 [target]
 # Coordinates for the heliocentric correction come from each frame's RA/DEC
-# header, and the time from DATE-OBS (mid-exposure). Override if needed:
+# header, and the time from DATE-OBS (mid-exposure). Override if needed (the override
+# applies to every object in the run, so use it with one object; KARP warns otherwise):
 # ra = "23:50:59.00"
 # dec = "+2:36:15.5"
 site_height = 2788.0   # m; not in the headers (APO)

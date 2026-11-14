@@ -1,4 +1,6 @@
 """python -m karp config.toml [--list]"""
+import sys
+
 from .cli import main
 
-main()
+sys.exit(main())

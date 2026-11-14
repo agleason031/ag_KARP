@@ -11,6 +11,15 @@ setup (disperser, slit, binning). Each group gets:
     are median-combined; the lamps' combined arcs are then added together).
 The [frames] section of the config can restrict or override any of these.
 Files that aren't raw frames (wrong shape, e.g. IRAF .ms.fits extractions) are skipped.
+
+[paths] layout says how raw_dir is organized:
+  "night"    all frames in raw_dir (pattern may include ** for subdirectories); output
+             folders are named after OBJNAME.
+  "objects"  each subdirectory of raw_dir holds one object's frames, searched
+             recursively, and its name is used for the output folder and files.
+             Subdirectories with no science frames (e.g. cals/), and files directly in
+             raw_dir, are a shared pool of calibrations: an object uses them for any kind
+             (bias, flat, arc) it has none of in its own subdirectory.
 """
 import glob
 import os
@@ -53,6 +62,8 @@ class Group:
     arcs: list # paths
     notes: list = field(default_factory=list) # warnings worth showing the user
     out_name: str = "" # output subdirectory name
+    prefix: str = "" # start of the output file names (default: objid)
+    source: str = "" # raw_dir subdirectory the frames came from (layout = "objects")
 
     def describe(self):
         disp, slit, binning = self.setup
@@ -90,16 +101,16 @@ def read_frame(path, h=None):
     )
 
 
-def scan(raw_dir, pattern="*.fits", det=None):
+def scan(raw_dir, pattern="*.fits", det=None, required=True):
     """
     Read the headers of all matching frames in raw_dir, sorted by frame number.
     `pattern` may use ** to search subdirectories (e.g. "**/*.fits"). Files that aren't
     raw KOSMOS frames (not 2D, or a size that doesn't fit the detector layout for their
     binning; det is the [detector] config) are skipped. Returns (frames, skipped),
-    skipped being [(path, reason)].
+    skipped being [(path, reason)]. With required=False, no matching files is not an error.
     """
     paths = sorted(glob.glob(os.path.join(raw_dir, pattern), recursive=True))
-    if not paths:
+    if not paths and required:
         raise FileNotFoundError(f"No files matching {pattern} in {raw_dir}")
     frames, skipped = [], []
     for p in paths:
@@ -128,9 +139,12 @@ def scan(raw_dir, pattern="*.fits", det=None):
     return sorted(frames, key=lambda f: f.num), skipped
 
 
-def build_groups(frames, fcfg):
+def build_groups(frames, fcfg, pool=(), need_cals=True):
     """
     Group science frames and attach calibrations. `fcfg` is the [frames] config section.
+    `pool`: shared calibration frames, used for a kind (bias, flat, arc) only when
+    `frames` has none that match; frame numbers in [frames] refer to `frames` only.
+    need_cals: biases and arcs are required (they are only used when frames are reduced).
     Returns (groups, problems): problems lists objects that couldn't be set up.
     """
     exclude = set(fcfg["exclude"])
@@ -142,6 +156,17 @@ def build_groups(frames, fcfg):
         if missing:
             raise ValueError(f"[frames] {kind}: frames {missing} not found")
         return [by_num[n] for n in nums]
+
+    def auto(kind, select, notes):
+        """Matching frames of this object, or else from the shared pool."""
+        own = [f for f in usable if select(f)]
+        if own or not pool:
+            return own
+        shared = [f for f in pool if select(f)]
+        if shared:
+            notes.append(f"{kind} from the shared calibrations: "
+                         + ", ".join(sorted({os.path.basename(os.path.dirname(f.path)) + "/" for f in shared})))
+        return shared
 
     science = [f for f in usable if f.imagetyp == "object"]
     if fcfg["science"]:
@@ -158,7 +183,7 @@ def build_groups(frames, fcfg):
         if fcfg["bias"]:
             bias = pick(fcfg["bias"], "bias")
         else:
-            bias = [f for f in usable if f.imagetyp == "bias" and f.binning == setup[2]]
+            bias = auto("bias", lambda f: f.imagetyp == "bias" and f.binning == setup[2], notes)
         for f in bias:
             if f.lamps:
                 notes.append(f"bias {f.num} has lamp(s) {', '.join(sorted(f.lamps))} on in its header")
@@ -166,7 +191,7 @@ def build_groups(frames, fcfg):
         if fcfg["flat"]:
             flat = pick(fcfg["flat"], "flat")
         else:
-            flat = [f for f in usable if f.imagetyp == "flat" and f.setup == setup]
+            flat = auto("flat", lambda f: f.imagetyp == "flat" and f.setup == setup, notes)
 
         if not flat:
             notes.append("no flats: the flat-field correction is skipped")
@@ -176,7 +201,7 @@ def build_groups(frames, fcfg):
             arcs = pick(fcfg["arc"], "arc")
         else:
             arcs = []
-            candidates = [f for f in usable if f.imagetyp == "comp" and f.setup == setup and f.lamps]
+            candidates = auto("arcs", lambda f: f.imagetyp == "comp" and f.setup == setup and bool(f.lamps), notes)
             for lamps in sorted({f.lamps for f in candidates}, key=sorted):
                 same = [f for f in candidates if f.lamps == lamps]
                 nearest = min(same, key=lambda f: abs(f.mjd - mid))
@@ -188,7 +213,7 @@ def build_groups(frames, fcfg):
                 notes.append(f"the nearest arc is {gap:.1f} h from the science frames")
 
         missing = [name for name, val in (("bias", bias), ("arc", arcs)) if not val]
-        if missing:
+        if missing and need_cals:
             problems.append(f"{objid} {setup}: no matching {', '.join(missing)} frames; skipped")
             continue
         groups.append(Group(
@@ -205,12 +230,70 @@ def build_groups(frames, fcfg):
         counts[g.objid] = counts.get(g.objid, 0) + 1
     for g in groups:
         name = g.objid if counts[g.objid] == 1 else f"{g.objid}_{g.setup[0]}_{g.setup[1]}_{g.setup[2]}"
-        g.out_name = re.sub(r"[^A-Za-z0-9._+-]", "_", name)
+        g.out_name = safe_name(name)
+        g.prefix = safe_name(g.objid) # file names: "2005 GO136" -> 2005_GO136_combined.fits
     return groups, problems
+
+
+def safe_name(name):
+    """A name usable for files and folders."""
+    return re.sub(r"[^A-Za-z0-9._+-]", "_", name)
+
+
+def discover_object_dirs(cfg):
+    """
+    layout = "objects": one object per subdirectory of raw_dir, plus shared calibrations
+    (see the module docstring). Returns (groups, problems, skipped files).
+    """
+    raw, det, fcfg = cfg["paths"]["raw_dir"], cfg["detector"], cfg["frames"]
+    if not os.path.isdir(raw):
+        raise FileNotFoundError(f"[paths] raw_dir {raw} is not a directory")
+    pattern = cfg["paths"]["pattern"]
+    sub_pattern = pattern if "**" in pattern else os.path.join("**", pattern)
+
+    pool, problems = [], []
+    top, skipped = scan(raw, pattern.replace("**/", ""), det, required=False)
+    for f in top:
+        if f.imagetyp == "object":
+            problems.append(f"{os.path.basename(f.path)}: science frame directly in {raw}, not in an "
+                            "object's subdirectory; skipped")
+        else:
+            pool.append(f)
+    objects = {}
+    for d in sorted(os.listdir(raw)):
+        if d.startswith(".") or not os.path.isdir(os.path.join(raw, d)):
+            continue
+        frames, sk = scan(os.path.join(raw, d), sub_pattern, det, required=False)
+        skipped += sk
+        if any(f.imagetyp == "object" for f in frames):
+            objects[d] = frames
+        else:
+            pool += frames
+    if not objects:
+        raise FileNotFoundError(f"No subdirectory of {raw} has science frames (IMAGETYP = Object); "
+                                'with [paths] layout = "objects" each object needs its own subdirectory')
+
+    groups = []
+    for d, frames in objects.items():
+        # [frames] objects may name the subdirectory instead of the OBJNAME
+        sub_fcfg = dict(fcfg, objects=[]) if d in fcfg["objects"] else fcfg
+        found, probs = build_groups(frames, sub_fcfg, pool, cfg["steps"]["reduce"])
+        problems += [f"{d}/: {p}" for p in probs]
+        for g in found:
+            # The subdirectory names the output, plus the object and setup if it holds several
+            name = d if len(found) == 1 else f"{d}_{g.out_name}"
+            g.out_name = g.prefix = safe_name(name)
+            g.source = d
+        groups += found
+    return groups, problems, skipped
 
 
 def discover(cfg):
     """Scan cfg['paths']['raw_dir'] and return (groups, problems)."""
-    frames, skipped = scan(cfg["paths"]["raw_dir"], cfg["paths"]["pattern"], cfg["detector"])
-    groups, problems = build_groups(frames, cfg["frames"])
-    return groups, problems + [f"{os.path.relpath(p, cfg['paths']['raw_dir'])}: {why}" for p, why in skipped]
+    raw = cfg["paths"]["raw_dir"]
+    if cfg["paths"]["layout"] == "objects":
+        groups, problems, skipped = discover_object_dirs(cfg)
+    else:
+        frames, skipped = scan(raw, cfg["paths"]["pattern"], cfg["detector"])
+        groups, problems = build_groups(frames, cfg["frames"], need_cals=cfg["steps"]["reduce"])
+    return groups, problems + [f"{os.path.relpath(p, raw)}: {why}" for p, why in skipped]

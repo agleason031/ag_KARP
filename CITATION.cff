@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use KARP in your research, please cite it as below."
+title: "KARP: KOSMOS Astronomical Reduction Pipeline"
+abstract: >-
+  A reduction pipeline for long-slit spectra from KOSMOS on the APO 3.5 m telescope:
+  from raw frames to wavelength-calibrated, combined spectra with propagated errors,
+  with optional flux calibration and continuum normalization.
+type: software
+authors:
+  - given-names: Alex
+    family-names: Gleason
+version: 1.0.0
+date-released: 2026-11-14
+license: BSD-3-Clause
+repository-code: "https://github.com/agleason031/ag_KARP"
+keywords:
+  - astronomy
+  - spectroscopy
+  - data reduction
+  - KOSMOS
+  - Apache Point Observatory

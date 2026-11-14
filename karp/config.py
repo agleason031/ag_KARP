@@ -23,11 +23,16 @@ DEFAULTS = {
         "raw_dir": REQUIRED, # Directory with the raw KOSMOS frames
         "output_dir": REQUIRED, # Each object is reduced into output_dir/<object>/
         "pattern": "*.fits", # Which files in raw_dir to consider; "**/*.fits" includes subdirectories
+        "layout": "night", # "night": raw_dir holds all the frames (e.g. one night), sorted by header;
+                           # "objects": each subdirectory of raw_dir holds one object's frames
+                           # (searched recursively) and names its output; subdirectories without
+                           # science frames (and files directly in raw_dir) are shared calibrations
     },
     "frames": {
         # Frame discovery is automatic (from FITS headers). These narrow or override it.
         # Frame numbers are the digits before ".fits" in the file name (k.0061.fits -> 61).
-        "objects": [], # Only reduce these OBJNAMEs (empty = all objects found)
+        "objects": [], # Only reduce these OBJNAMEs, or subdirectories with layout = "objects"
+                       # (empty = all objects found)
         "science": [], # Only use these science frames (empty = all)
         "bias": [], # Use exactly these bias frames (empty = all biases with matching binning)
         "flat": [], # Use exactly these flats (empty = all flats with matching setup; none found =
@@ -37,7 +42,8 @@ DEFAULTS = {
         "exclude": [], # Never use these frames
     },
     "target": {
-        # Coordinates come from each frame's RA/DEC header; set these to override.
+        # Coordinates come from each frame's RA/DEC header; set these to override (for every
+        # object in the run, so only useful with one object; KARP warns otherwise).
         "ra": None, # e.g. "23:50:59.00"
         "dec": None, # e.g. "+2:36:15.5"
         "site_height": 2788.0, # Observatory height in m (not in the headers; APO = 2788)
@@ -197,6 +203,8 @@ def merge(user):
             if value is REQUIRED:
                 raise ConfigError(f"[{section}] {key} is required")
 
+    if cfg["paths"]["layout"] not in ("night", "objects"):
+        raise ConfigError('[paths] layout should be "night" or "objects"')
     if cfg["combine"]["scale"] not in ("smooth", "median", "none"):
         raise ConfigError('[combine] scale should be "smooth", "median" or "none"')
     if cfg["combine"]["method"] not in ("weighted", "mean", "median"):

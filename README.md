@@ -15,7 +15,7 @@ raw frames ─► sort by header ─► overscan, bias, flat ─► cosmic rays 
 ## Installation
 
 ```bash
-git clone git@github.com:agleason031/ag_KARP.git
+git clone https://github.com/agleason031/ag_KARP.git
 cd ag_KARP
 conda env create -f environment.yml   # creates the "ag_karp" environment
 conda activate ag_karp
@@ -26,8 +26,10 @@ Requires Python ≥ 3.11. `pygame` is only needed if you turn on `[output] sound
 
 ## Quick start
 
-1. Copy [example_config.toml](example_config.toml) and set `[paths] raw_dir` (the folder
-   of raw `k.NNNN.fits` frames) and `output_dir`. Every other setting has a default.
+1. Put the raw frames in [observations/](observations/README.md), one subdirectory per
+   object (its name names the output), with shared calibrations in a subdirectory such as
+   `cals/`. Copy [example_config.toml](example_config.toml), which reads `observations/` and
+   writes to `reductions/` (both ignored by git). Every other setting has a default.
 2. Check which frames KARP will use:
    ```bash
    python -m karp my_night.toml --list
@@ -47,7 +49,17 @@ taken within an hour; repeats are median-combined, and the different lamps are a
 together. If there are no flats, KARP skips the flat-field correction and says so. The
 frame lists in `[frames]` can narrow or override all of this. Set `pattern = "**/*.fits"`
 to include subdirectories. Files that aren't raw frames, such as IRAF `.ms.fits`
-extractions, are skipped. Each group is written to `output_dir/<OBJNAME>/`.
+extractions, are skipped.
+
+`[paths] layout` says how `raw_dir` is organized. With `"objects"` (as in the example config),
+each subdirectory holds one object and gives its output folder and file names; subdirectories
+without science frames, and files directly in `raw_dir`, are shared calibrations that an object
+uses for any kind (bias, flat, arc) it has none of itself. With `"night"` (the default), all
+frames are in `raw_dir` and each group is written to `output_dir/<OBJNAME>/`.
+
+If one object fails, KARP logs the error, carries on with the others, lists the failures at
+the end and exits with status 1. Python warnings from the libraries go to `KARP_log.txt`, not
+the console.
 
 ## What each step does
 
@@ -62,12 +74,15 @@ extractions, are skipped. Each group is written to `output_dir/<OBJNAME>/`.
 | Flux calibration (optional) | Uses a spectrophotometric standard observed with the same disperser, slit and binning, recognized by its OBJNAME. Its combined spectrum is converted to a count rate per Å and corrected for extinction (APO curve, mid-exposure airmass). It is compared with the tabulated flux (HST CALSPEC) at matched resolution: at each wavelength the sharper of the two is smoothed to the other's resolution, after a fitted wavelength offset between the standard and its tabulated spectrum is taken out. The ratio is the sensitivity, which is fit with a spline that leaves out line cores and telluric bands. It is applied to every object with that setup, using the standard nearest in time. Objects with no matching standard are not flux calibrated. See `[fluxcal]`. |
 | Normalization (optional) | A cubic spline continuum with asymmetric sigma clipping and a line mask (`[normalization]`). It isn't required for a valid reduction; turn it off with `[steps] normalize = false`. |
 
-The steps in `[steps]` can be run separately. For example, `reduce = false` re-combines or
-re-normalizes earlier output without redoing the extraction.
+The steps in `[steps]` can be run separately. For example, `reduce = false` re-combines,
+re-normalizes or re-flux-calibrates earlier output without redoing the extraction; the
+biases, flats and arcs aren't needed for that, only the science frames' headers.
 
 ## Output
 
-Each object gets its own folder, `output_dir/<OBJNAME>/`:
+Each object gets its own folder, `output_dir/<name>/` (the subdirectory name, or OBJNAME).
+File names start with the same name (`<obj>`), with any character other than letters, digits
+and `._+-` replaced by `_` (OBJNAME `2005 GO136` gives `2005_GO136_combined.fits`):
 
 ```
 <obj>_<n>_extracted.fits     each frame's spectrum
@@ -157,7 +172,7 @@ python scripts/make_wavecal_reference.py OBJ/diagnostics/frame_61/wavecal_lines.
   `scripts/fetch_calspec.py` and run that script. For a star that isn't in CALSPEC, set
   `[fluxcal] standard` to its OBJNAME and `reference` to a file of air wavelength (Å) and
   flux (erg s⁻¹ cm⁻² Å⁻¹).
-- `karp/data/extinction/apo.txt`: the APO extinction curve (Davenport 2015, via pykosmos).
+- `karp/data/extinction/apo.txt`: the APO extinction curve (J. R. A. Davenport, via pykosmos).
 - `karp/data/masks/standard.txt`: line cores and telluric bands left out of the sensitivity fit.
 
 The shape of a fluxed spectrum is reliable. The absolute level is only as good as the match
@@ -200,12 +215,24 @@ karp/                   the package
   paths.py              location of karp/data/
   data/                 line lists, wavelength references, masks, standards, extinction
 scripts/                fetch_calspec.py, make_wavecal_reference.py
+tests/unit/             unit tests on simulated data (pytest)
 tests/regression/       end-to-end regression test
 ```
 
-## Regression tests
+## Tests
 
-`tests/regression/regress.py` runs the whole pipeline on a reference data set and compares
+Unit tests run in a few seconds and need no data: they build simulated frames, arcs and
+spectra with a known answer (a tilted star on sky with cosmic rays, an argon arc from the
+real line list, a standard star seen through a known sensitivity curve, ...) and check that
+KARP recovers it. They also cover the settings checks, the detector layout and the frame
+sorting. GitHub runs them on every push.
+
+```bash
+pip install -e ".[test]"
+pytest
+```
+
+The regression test `tests/regression/regress.py` runs the whole pipeline on a reference data set and compares
 every intermediate and final array with a saved snapshot:
 
 ```bash
@@ -242,3 +269,34 @@ written to `tests/regression/runs/`.
 - The arc and sky line-finding windows are set in binned pixels. Their right size depends
   on the line width, which depends on the slit as much as on the binning. They work at 2×1
   with the 0.87″ slit and at 2×2 with the 2.1″ slit.
+
+## Data credits
+
+KARP ships with these data files (`karp/data/`):
+
+- **Arc line lists** (`linelists/`): Ar I, Ne I and Kr I wavelengths and relative
+  intensities from the NIST Atomic Spectra Database (Kramida, A., Ralchenko, Yu., Reader, J.
+  & NIST ASD Team, NIST Atomic Spectra Database, https://physics.nist.gov/asd,
+  doi:10.18434/T4W30F; retrieved 2026-11-13).
+- **Flux standards** (`standards/`): spectra from the HST CALSPEC database (Bohlin, Gordon &
+  Tremblay 2014, PASP 126, 711; Bohlin, Hubeny & Rauch 2020, AJ 160, 21;
+  https://archive.stsci.edu/hlsps/reference-atlases/cdbs/current_calspec/),
+  converted to air wavelengths with the formula of Morton (2000, ApJS 130, 403). Each file's
+  header names the CALSPEC file it came from.
+- **APO extinction curve** (`extinction/apo.txt`): the curve prepared by J. R. A. Davenport
+  (2015, credited in the file; not a journal publication) and distributed with
+  [pykosmos](https://github.com/jradavenport/pykosmos) (MIT license, included as
+  `extinction/LICENSE-pykosmos.txt`).
+- **Wavelength reference** (`wavecal/kosmos_blue.json`) and **line masks** (`masks/`): made
+  for KARP.
+
+Please cite these sources as well as KARP when they contribute to your results.
+
+## License and citation
+
+KARP is released under the BSD 3-Clause license ([LICENSE](LICENSE)). If you use it in
+published work, please cite it using [CITATION.cff](CITATION.cff) (GitHub's "Cite this
+repository" button gives BibTeX and APA formats).
+
+KARP was created by Alex Gleason, based on original code by Chase L. Smith and Max Moe.
+The optimal extraction follows Horne (1986, PASP 98, 609).

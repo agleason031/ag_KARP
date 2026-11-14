@@ -133,16 +133,13 @@ class ObjectReduction:
                  f"columns, buffer {self.buffer_cols}, background {self.background_cols} per side; profile window "
                  f"{self.profile_window} rows")
 
-        # Wavelength calibration: arc image, lamps, reference solution; [wavecal] row
-        # sizes (unbinned) converted to this binning
-        self.arc_image, header_lamps = load_arc(group.arcs, self.det)
+        # [wavecal] row sizes (unbinned) converted to this binning. The arcs themselves are
+        # loaded when the first frame is reduced (load_arcs), so the later steps can be
+        # rerun without them.
         wc = cfg["wavecal"]
         self.wcfg = dict(wc, search=wc["search"] / biny, match_tol=wc["match_tol"] / biny)
-        self.arc_lamps = wc["lamps"] or header_lamps
-        if not self.arc_lamps:
-            raise ValueError(f"No lamps are on in the arc headers of {group.arcs}; set [wavecal] lamps")
-        self.wave_reference = wavecal.load_reference(group.setup[0], wc["reference"])
         self.sky_lines = wc["sky_lines"]
+        self.arc_image = self.arc_lamps = self.wave_reference = None
 
         self.frames = {} # frame number -> FrameSpectrum
         self.combined = None # combine.Combined
@@ -155,8 +152,22 @@ class ObjectReduction:
     # per frame
     # ------------------------------------------------------------------
 
+    def load_arcs(self):
+        """Arc image, lamps and reference wavelength solution (once, for the first frame reduced)."""
+        if self.arc_image is not None:
+            return
+        if not self.group.arcs:
+            raise ValueError(f"No arc frames for {self.objid} {self.group.setup}; they are needed to reduce frames")
+        self.arc_image, header_lamps = load_arc(self.group.arcs, self.det)
+        wc = self.cfg["wavecal"]
+        self.arc_lamps = wc["lamps"] or header_lamps
+        if not self.arc_lamps:
+            raise ValueError(f"No lamps are on in the arc headers of {self.group.arcs}; set [wavecal] lamps")
+        self.wave_reference = wavecal.load_reference(self.group.setup[0], wc["reference"])
+
     def reduce_frame(self, frame, bias, flat):
         """Calibrate, trace, extract and wavelength-calibrate one science frame; writes its extracted spectrum."""
+        self.load_arcs()
         path = self.group.science[frame]
         log.info(f"KARP is reducing science image {frame} ({os.path.basename(path)})")
         os.makedirs(self.out.frame_dir(frame), exist_ok=True)
