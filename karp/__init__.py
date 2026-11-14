@@ -6,4 +6,4 @@ combined and optionally flux-calibrated and continuum-normalized spectra.
 
     python -m karp config.toml          # or: karp config.toml, python ag_KARP.py config.toml
 """
-__version__ = "1.0.0"
+__version__ = "1.1.0"
