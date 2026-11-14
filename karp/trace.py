@@ -7,6 +7,10 @@ Tracing the spectrum on the 2D frame.
      polynomial fit to the Gaussian centers with iterative 3-sigma clipping. The result
      is a sub-pixel trace for every row (and the same rounded to whole columns).
 
+Which star to trace, when several are in the slit: find_slit_sources lists them and
+nearest_source picks the one nearest a column (the slit center by default; see
+pipeline.ObjectReduction.trace_start_for).
+
 Rows are the dispersion axis and columns the spatial axis. Sizes given in unbinned
 pixels are converted with the frame's binning.
 """
@@ -18,6 +22,7 @@ from joblib import Parallel, delayed
 from numba import njit
 from numpy.polynomial import Polynomial
 from scipy.optimize import least_squares
+from scipy.signal import find_peaks
 from tqdm import tqdm
 
 from .detector import to_binned
@@ -44,7 +49,10 @@ def _fit_row(x_vals, y_vals, y_bck, center):
     if x_vals is None:
         return [np.nan, np.nan, np.nan, np.nan]
     bck = np.median(y_bck)
-    p0 = [np.max(y_vals) - bck, center, 2.0, bck]
+    amp = np.max(y_vals) - bck
+    if not (np.isfinite(amp) and amp > 0):  # no peak above the background in this row
+        return [np.nan, np.nan, np.nan, np.nan]
+    p0 = [amp, center, 2.0, max(bck, -100)]
     bounds = ([0, 0, 1, -100], [np.inf, np.inf, np.inf, np.inf])
     result = least_squares(_residuals, p0, args=(x_vals, y_vals), bounds=bounds, max_nfev=30)
     return result.x if result.success else [np.nan, np.nan, np.nan, np.nan]
@@ -74,6 +82,43 @@ def _row_fit_inputs(image, centers, aperture_half, buffer, background):
     return inputs
 
 
+def find_slit_sources(image, binning, min_separation=20):
+    """
+    The sources (stars) across the slit: peaks of the median spatial profile of the
+    middle half of the rows, with the background level removed. A star must rise above the
+    sky around it (its prominence) by 30x the profile's noise and by 1% of the brightest
+    star's prominence, be at least 2.4 unbinned columns wide at half that height (hot
+    columns are narrower), and be at least `min_separation` unbinned columns from a
+    brighter one. The noise is the scatter from column to column, which the slit edges,
+    the step between the amplifiers and a bright (twilight) sky don't inflate; the 30x
+    leaves out the faint fixed structure along the slit (up to ~25x on KOSMOS frames).
+    Returns (profile, sources): sources is a list of (column, peak height above the
+    profile's median) sorted by column, in binned columns and electrons.
+    """
+    binx, _ = binning
+    n_rows = image.shape[0]
+    profile = np.nanmedian(image[n_rows // 4: 3 * n_rows // 4], axis=0)
+    profile = profile - np.nanmedian(profile)
+    filled = np.nan_to_num(profile, nan=0.0)
+    noise = mad_std(np.diff(filled)) / np.sqrt(2)
+    peaks, props = find_peaks(filled, prominence=30 * noise, width=2.4 / binx,
+                              distance=to_binned(min_separation, binx, minimum=2))
+    if len(peaks):
+        peaks = peaks[props["prominences"] >= 0.01 * props["prominences"].max()]
+    return profile, [(int(c), float(filled[c])) for c in peaks]
+
+
+def brightest_column(image):
+    """The brightest column of the middle half of the rows (median along the rows)."""
+    n_rows = image.shape[0]
+    return int(np.nanargmax(np.nanmedian(image[n_rows // 4: 3 * n_rows // 4], axis=0)))
+
+
+def nearest_source(sources, col):
+    """The (column, peak) of the source nearest column `col`, or None if there are none."""
+    return min(sources, key=lambda s: abs(s[0] - col)) if sources else None
+
+
 def find_coarse_trace(image, binning, start_col=None, block=100, search=20):
     """
     Rough trace column for every row, from the peak of the median spatial profile in
@@ -93,7 +138,7 @@ def find_coarse_trace(image, binning, start_col=None, block=100, search=20):
     profiles -= np.nanmedian(profiles, axis=1, keepdims=True) # Remove the sky/background level
 
     if start_col is None:
-        col0 = int(np.nanargmax(np.nanmedian(image[n_rows // 4: 3 * n_rows // 4], axis=0)))
+        col0 = brightest_column(image)
     else:
         col0 = start_col
 

@@ -67,7 +67,7 @@ the console.
 |---|---|
 | Calibration | Each amplifier's overscan is fit along the rows and subtracted, then the frame is trimmed and converted to electrons with that amplifier's gain. The master bias is a clipped median. The flats are bias-subtracted, scaled by their medians and median-combined; dividing by a 5×5 smoothed copy gives the pixel-to-pixel flat. The flat is set to 1 in the rows crossed by the grating's zeroth order, which are found automatically (`[flat]`). Master calibrations are saved in `calib/` and rebuilt when the input frames or settings change. |
 | Cosmic rays | L.A.Cosmic on each 2D frame (`[cosmic_rays]`). |
-| Trace | Coarse peak tracking, Gaussian fits per row, then a clipped polynomial (`[trace]`). |
+| Trace | The star nearest the slit center is traced (see [Choosing the star](#choosing-the-star-in-the-slit)). Coarse peak tracking, Gaussian fits per row, then a clipped polynomial (`[trace]`). |
 | Extraction | Sky fit per row across both background windows. Optimal extraction (Horne 1986) uses a smoothed data-derived profile and outlier rejection; boxcar is also available. Errors come from a per-pixel variance image (Poisson + read noise, through the flat). See `[extraction]`. |
 | Wavelength calibration | The arc is extracted along each frame's trace and its lines are found and centroided. Features much wider or narrower than a typical line (ghosts, blends) and lines on the wing of a much brighter line are left out. They are identified against NIST line lists starting from a stored reference solution, then fit with a clipped polynomial (order chosen automatically by default). Night-sky lines are measured to check flexure, which can be reported or corrected. A heliocentric correction is applied to each frame from its header. See `[wavecal]`. |
 | Combine | Frames are interpolated onto the best frame's wavelength grid and scaled to it with a smooth function of wavelength. The default combination is an inverse-variance weighted mean with outlier rejection based on the errors; plain mean and median are also available. See `[combine]`. |
@@ -91,10 +91,12 @@ and `._+-` replaced by `_` (OBJNAME `2005 GO136` gives `2005_GO136_combined.fits
 <obj>_fluxed.fits/.png       flux-calibrated (if a standard was observed with this setup)
 KARP_log.txt                 full log of the run (rewritten each run)
 KARP_run_info.txt            the frames and every setting used
+trace_choice.json            the star picked with --pick (reused by later runs)
 calib/                       master bias, final flat; a standard's sensitivity function
 diagnostics/                 frames.png (each frame / combined), continuum.png, sensfunc.png;
                              with verbose also the master bias and flat and zoomed views
-diagnostics/frame_<n>/       per frame: trace.png (fit, residuals, profile width), wavecal.png
+diagnostics/frame_<n>/       per frame: slit.png (stars in the slit, which one is traced),
+                             trace.png (fit, residuals, profile width), wavecal.png
                              (arc with identified lines, residuals), wavecal_lines.txt,
                              spectrum.png (flux, error, sky); with verbose also image.png (the
                              frame with its extraction windows) and cuts across the slit
@@ -145,6 +147,36 @@ The log lists the resulting sizes in pixels.
 The other `[detector]` defaults are two amplifiers with a gain of
 0.6 e⁻/DN from the spec sheet, and 5.7 e⁻ read noise. The flats suggest the gain may be closer
 to 0.72–0.77 e⁻/DN; check this for your data.
+
+## Choosing the star in the slit
+
+A long slit often holds more than one star. KARP lists the stars in each frame (in the log
+and in `diagnostics/frame_<n>/slit.png`) and by default traces the one nearest the slit
+center: `[trace] slit_center`, an unbinned CCD column, or the middle of the frame if that
+isn't set. Set `select = "brightest"` to trace the brightest column instead, as KARP 1.0 did.
+If a star brighter than the traced one is in the slit, KARP logs a warning.
+
+To choose for yourself, either set the column per object in the config (unbinned CCD columns;
+the names are as in `[frames] objects`):
+
+```toml
+[trace.cols]
+j0653p0239 = 952
+```
+
+or let KARP ask while it runs:
+
+```bash
+python -m karp my_night.toml --pick              # ask for every object
+python -m karp my_night.toml --pick j0741p0427   # only this one
+```
+
+On each object's first frame, KARP plots the slit profile, lists the stars with their offsets
+from the slit center, and waits for a number, `c<column>` (a binned column), or Enter to keep
+its own choice. The choice is used for all of that object's frames and saved to
+`<output_dir>/<name>/trace_choice.json`, so later runs reuse it without asking. Delete the
+file to forget the choice. In order of precedence: `--pick`, `[trace] cols`, the saved
+choice, `[trace] col` (one column for every object), then `select`.
 
 ## Wavelength calibration data
 

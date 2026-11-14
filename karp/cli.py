@@ -3,6 +3,7 @@ KARP: KOSMOS Astronomical Reduction Pipeline. Command line and run control.
 
     python -m karp config.toml          # reduce every object found (or: karp, python ag_KARP.py)
     python -m karp config.toml --list   # only show which frames would be used
+    python -m karp config.toml --pick [OBJECT ...]   # ask which star in the slit to trace
 
 Created by Alex Gleason, based on original code by Chase L. Smith and Max Moe
 
@@ -63,6 +64,36 @@ def setup_console_log(verbose):
     console.setLevel(logging.DEBUG if verbose else logging.INFO)
 
 
+def ask_trace_start(name, frame, sources, default, center, arcsec_per_col, plot):
+    """
+    Ask which star in the slit to trace (--pick). sources: [(binned column, peak e-)];
+    default: the column KARP would use. Returns the chosen binned column, or None to keep
+    the default (Enter).
+    """
+    print(f"\n{name}: stars in the slit of frame {frame} (profile plot: {plot})")
+    print("   #  column  from slit center   peak (e-)")
+    for i, (col, peak) in enumerate(sources, start=1):
+        mark = "   <- default" if col == default else ""
+        print(f"  {i:2d}  {col:6d}  {(col - center) * arcsec_per_col:+14.1f}\"  {peak:10.0f}{mark}")
+    if not sources:
+        print("  (no clear star found)")
+    if all(col != default for col, _ in sources):
+        print(f"  default: column {default}")
+    while True:
+        answer = input(f"Trace which star? [1-{len(sources)}], c<column> for a binned column, "
+                       f"Enter for the default ({default}): ").strip().lower()
+        if not answer:
+            return None
+        try:
+            if answer.startswith("c") and int(answer[1:]) >= 0:
+                return int(answer[1:])
+            if 1 <= int(answer) <= len(sources):
+                return sources[int(answer) - 1][0]
+        except ValueError:
+            pass
+        print("Please give a number from the list, c<column> (e.g. c476), or press Enter.")
+
+
 def write_run_info(cfg, group, out):
     """Record the settings and frames used, for provenance."""
     with open(out.run_info, "w") as f:
@@ -79,13 +110,14 @@ def standard_name(cfg, group):
     return std if group.objid == std else None
 
 
-def run_group(cfg, group, sensfuncs=None):
+def run_group(cfg, group, sensfuncs=None, pick=None):
     """
     Reduce one object/setup group and return its ObjectReduction. Everything logged
     meanwhile also goes to KARP_log.txt in the object's folder (rewritten each run).
     sensfuncs: {setup: [sensitivity functions]} shared between groups; a standard star
     adds its own, and any group with the same setup is flux calibrated with the one
-    nearest in time (standards are run first, see main).
+    nearest in time (standards are run first, see main). pick: function asking which
+    star in the slit to trace (ask_trace_start), or None.
     """
     sensfuncs = {} if sensfuncs is None else sensfuncs
     steps = cfg["steps"]
@@ -103,7 +135,7 @@ def run_group(cfg, group, sensfuncs=None):
         log.info(f"KARP reducing {label}")
         log.debug(group.describe())
         plots = Plotter(group.objid, out, cfg["output"]["verbose"])
-        obj = ObjectReduction(cfg, group, out, plots)
+        obj = ObjectReduction(cfg, group, out, plots, pick=pick)
 
         if steps["reduce"]:
             bias, flat = calibration.master_calibrations(group.bias, group.flat, cfg["detector"], cfg["flat"],
@@ -143,12 +175,14 @@ def run_group(cfg, group, sensfuncs=None):
     return obj
 
 
-def run(config, overrides=None, list_only=False):
+def run(config, overrides=None, list_only=False, pick=None):
     """
     Run KARP on a config file. `overrides` is an optional {"section.key": value} dict
     applied on top of the file. Each object is reduced in turn; an object that fails is
-    logged and the others still run. Returns (results, failures): {output name:
-    ObjectReduction} for the objects reduced, {output name: error} for those that failed.
+    logged and the others still run. pick: None, or a list of object names for which to
+    ask which star in the slit to trace (empty list = every object; needs a terminal).
+    Returns (results, failures): {output name: ObjectReduction} for the objects reduced,
+    {output name: error} for those that failed.
     """
     try:
         cfg = load_config(config, overrides)
@@ -164,12 +198,12 @@ def run(config, overrides=None, list_only=False):
         astropy_level = astropy_log.level
         astropy_log.setLevel("ERROR")
         try:
-            return _run(cfg, list_only)
+            return _run(cfg, list_only, pick)
         finally:
             astropy_log.setLevel(astropy_level)
 
 
-def _run(cfg, list_only):
+def _run(cfg, list_only, pick=None):
     try:
         groups, problems = discover(cfg)
     except (OSError, ValueError) as err:
@@ -185,8 +219,22 @@ def _run(cfg, list_only):
         log.warning(f"WARNING: [target] ra/dec are set and are used for every object ({', '.join(objects)}), "
                     "so the airmass and heliocentric correction will be wrong for all but one of them. "
                     "Remove them to use each frame's header, or limit the run with [frames] objects.")
+    known = {g.out_name for g in groups} | {g.objid for g in groups}
+    unused = [name for name in cfg["trace"]["cols"] if name not in known]
+    if unused:
+        log.warning(f"WARNING: [trace] cols names {', '.join(unused)}, not an object of this run "
+                    f"({', '.join(sorted(g.out_name for g in groups))})")
     if list_only or not groups:
         return {}, {}
+    if pick is not None:
+        unknown = [name for name in pick if name not in known]
+        if unknown:
+            log.warning(f"WARNING: --pick: no object named {', '.join(unknown)} in this run")
+        if not cfg["steps"]["reduce"]:
+            log.warning("WARNING: --pick does nothing with [steps] reduce = false (no frames are traced)")
+        if not sys.stdin.isatty():
+            log.warning("WARNING: --pick needs a terminal to ask in; using the settings instead")
+            pick = None
 
     log.info("KARP is swimming! (Code is running)")
     for i in range(6):
@@ -199,7 +247,8 @@ def _run(cfg, list_only):
     for group in groups:
         log.info(f"\n=== {group.out_name} ===")
         try:
-            results[group.out_name] = run_group(cfg, group, sensfuncs)
+            ask = pick is not None and (not pick or group.out_name in pick or group.objid in pick)
+            results[group.out_name] = run_group(cfg, group, sensfuncs, pick=ask_trace_start if ask else None)
         except Exception as err: # logged by run_group; carry on with the next object
             failures[group.out_name] = f"{type(err).__name__}: {err}"
 
@@ -221,7 +270,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="karp", description="KOSMOS Astronomical Reduction Pipeline")
     parser.add_argument("config", help="TOML configuration file (see example_config.toml)")
     parser.add_argument("--list", action="store_true", help="show the frames KARP would use, then stop")
+    parser.add_argument("--pick", nargs="*", metavar="OBJECT",
+                        help="ask which star in the slit to trace (for these objects; none named = all); "
+                             "the choice is saved and reused by later runs")
     parser.add_argument("--version", action="version", version=f"KARP {__version__}")
     args = parser.parse_args(argv)
-    _, failures = run(args.config, list_only=args.list)
+    _, failures = run(args.config, list_only=args.list, pick=args.pick)
     return 1 if failures else 0

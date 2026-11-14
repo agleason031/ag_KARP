@@ -13,9 +13,11 @@ Output layout, in <output_dir>/<object>/:
     diagnostics/                    plots and tables for checking the reduction
     diagnostics/frame_<n>/          per-frame diagnostics
 """
+import json
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import ccdproc
 import numpy as np
@@ -31,7 +33,7 @@ from .extract import extract, variance_image
 from .normalize import fit_continuum
 from .observation import exposure_info, heliocentric_correction
 from .regions import mask_regions
-from .trace import fit_trace
+from .trace import brightest_column, find_slit_sources, fit_trace, nearest_source
 from .wavecal import C_KMS
 
 log = logging.getLogger("karp")
@@ -50,6 +52,7 @@ class OutputPaths:
         self.master_bias = os.path.join(self.calib, f"{objid}_master_bias.fits")
         self.final_flat = os.path.join(self.calib, f"{objid}_final_flat.fits")
         self.sensfunc = os.path.join(self.calib, f"{objid}_sensfunc.fits")
+        self.trace_choice = os.path.join(self.root, "trace_choice.json") # star picked with --pick
 
     def make_dirs(self):
         for d in (self.root, self.calib, self.diagnostics):
@@ -99,10 +102,11 @@ class Normalized:
 
 
 class ObjectReduction:
-    def __init__(self, cfg, group, out, plots):
+    def __init__(self, cfg, group, out, plots, pick=None):
         """
         cfg: full config (config.load_config); group: discover.Group with this object's
-        frames; out: OutputPaths; plots: plots.Plotter.
+        frames; out: OutputPaths; plots: plots.Plotter. pick: optional function that asks
+        which star in the slit to trace (see trace_start_for and cli.ask_trace_start).
         """
         self.cfg = cfg
         self.group = group
@@ -124,8 +128,11 @@ class ObjectReduction:
         self.buffer_cols = int(round(ext["buffer_arcsec"] / arcsec_per_col)) # per side
         self.background_cols = int(round(ext["background_arcsec"] / arcsec_per_col)) # per side
         self.profile_window = detector.to_binned(ext["profile_window"], biny, odd=True, minimum=3)
-        trace_col = cfg["trace"]["col"] # unbinned CCD column
-        self.trace_start = None if trace_col is None else int(trace_col // binx)
+        self.arcsec_per_col = arcsec_per_col
+        self.pick = pick
+        self.slit_checked = False # the first frame lists the stars in the slit (and asks, with pick)
+        self.last_start = None # the previous frame's trace start, if no star is found in a frame
+        self.trace_start, self.trace_start_from = self.configured_trace_start()
 
         with fits.open(group.science[min(group.science)]) as hdul:
             log.info(detector.describe(detector.frame_geometry(hdul[0].header, self.det)))
@@ -165,6 +172,98 @@ class ObjectReduction:
             raise ValueError(f"No lamps are on in the arc headers of {self.group.arcs}; set [wavecal] lamps")
         self.wave_reference = wavecal.load_reference(self.group.setup[0], wc["reference"])
 
+    def configured_trace_start(self):
+        """
+        The trace's starting column (binned) given for this object, and where it came from:
+        [trace] cols, then an earlier --pick (trace_choice.json), then [trace] col.
+        (None, None) if none is given: trace_start_for chooses one from each frame.
+        """
+        tr, binx = self.cfg["trace"], self.binning[0]
+        for name in (self.group.out_name, self.objid):
+            if name in tr["cols"]:
+                return tr["cols"][name] // binx, f"[trace] cols {name} = {tr['cols'][name]}"
+        if os.path.exists(self.out.trace_choice):
+            with open(self.out.trace_choice) as f:
+                col = json.load(f)["col"]
+            return col // binx, f"picked earlier ({self.out.trace_choice}: CCD column {col})"
+        if tr["col"] is not None:
+            return tr["col"] // binx, f"[trace] col = {tr['col']}"
+        return None, None
+
+    def slit_center(self, n_cols):
+        """The slit center in binned columns: [trace] slit_center, or the middle of the frame."""
+        center = self.cfg["trace"]["slit_center"]
+        return n_cols // 2 if center is None else center // self.binning[0]
+
+    def save_trace_choice(self, col, frame):
+        """Remember an interactive pick (binned column) so later runs use it without asking."""
+        binx = self.binning[0]
+        with open(self.out.trace_choice, "w") as f:
+            json.dump({"col": col * binx, "binned_col": col, "binning": list(self.binning), "frame": frame,
+                       "picked": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                       "note": "unbinned CCD column of the star to trace; used by later runs unless "
+                               "[trace] cols names this object. Delete this file to forget the pick."}, f, indent=2)
+        log.info(f"Trace start saved to {self.out.trace_choice}")
+
+    def trace_start_for(self, image, frame):
+        """
+        Where to start tracing this frame (binned column, or None for the brightest column).
+        Lists the stars in the slit; on the first frame, warns if a brighter star than the
+        chosen one is in the slit and, with pick, asks which to trace (kept for the other frames).
+        """
+        profile, sources = find_slit_sources(image, self.binning)
+        center = self.slit_center(image.shape[1])
+        select = self.cfg["trace"]["select"]
+        if self.trace_start is not None:
+            start, why = self.trace_start, self.trace_start_from
+        elif select == "brightest":
+            start, why = None, "brightest column"
+        else:
+            near = nearest_source(sources, center)
+            if near is None:
+                # Keep the previous frame's star (the same pointing); the slit center only for the first frame
+                start = center if self.last_start is None else self.last_start
+                why = (f"slit center, column {center}" if self.last_start is None
+                       else f"the previous frame's column {start}") + " (no clear star found)"
+                log.warning(f"WARNING: no clear star in the slit of frame {frame}; starting the trace at {why}")
+            else:
+                start = near[0]
+                offset = (near[0] - center) * self.arcsec_per_col
+                why = f"star nearest the slit center ({offset:+.1f}\" from column {center})"
+                if abs(offset) > 30 and not (self.pick is not None and not self.slit_checked):
+                    log.warning(f"WARNING: the star nearest the slit center is {offset:+.1f}\" from it; check "
+                                f"diagnostics/frame_{frame}/slit.png, or set [trace] cols / use --pick")
+
+        if not self.slit_checked:
+            self.slit_checked = True
+            if self.pick is not None:
+                default = brightest_column(image) if start is None else start
+                plot = self.out.frame_file(frame, "slit.png")
+                self.plots.slit_sources(profile, sources, default, center, frame)
+                picked = self.pick(self.group.out_name, frame, sources, default, center, self.arcsec_per_col, plot)
+                if picked is not None:
+                    start, why = picked, "picked interactively"
+                    self.trace_start, self.trace_start_from = picked, why
+                    self.save_trace_choice(picked, frame)
+            # Keep a column chosen for the first frame (from a pick or the settings) for the others
+            chosen = brightest_column(image) if start is None else start
+            mine = nearest_source(sources, chosen)
+            if mine is not None and abs(mine[0] - chosen) > self.aperture_half:
+                mine = None # the traced star is too faint to be listed: every listed star is brighter
+            brighter = [s for s in sources if s is not mine and (mine is None or s[1] > mine[1])]
+            if brighter:
+                cols = ", ".join(f"{c} ({(c - center) * self.arcsec_per_col:+.1f}\")" for c, _ in brighter)
+                log.warning(f"WARNING: the slit holds a brighter star than the one traced (column {chosen}): "
+                            f"column {cols}. See diagnostics/frame_{frame}/slit.png; to trace another star set "
+                            f"[trace] cols or run with --pick")
+
+        listed = ", ".join(f"{c} ({p:.0f} e-)" for c, p in sources) or "none"
+        log.info(f"Stars in the slit (column, peak): {listed}; trace starts at "
+                 f"{'the brightest column' if start is None else f'column {start}'}: {why}")
+        self.plots.slit_sources(profile, sources, brightest_column(image) if start is None else start, center, frame)
+        self.last_start = start
+        return start
+
     def reduce_frame(self, frame, bias, flat):
         """Calibrate, trace, extract and wavelength-calibrate one science frame; writes its extracted spectrum."""
         self.load_arcs()
@@ -188,10 +287,11 @@ class ObjectReduction:
             CCDData(flat_fielded, unit="electron").write(self.out.frame_file(frame, "image.fits"), overwrite=True)
         variance = variance_image(image, flat, det["readnoise"]) # e-^2 per pixel
 
-        # Trace
+        # Trace (which star: see trace_start_for)
+        start = self.trace_start_for(image, frame)
         columns, trace, trace_fits, trace_used = fit_trace(
             image, self.aperture_half, self.buffer_cols, self.background_cols, self.cfg["trace"]["order"],
-            self.binning, self.trace_start)
+            self.binning, start)
         self.plots.trace(trace_fits, trace, trace_used, frame)
         if self.verbose:
             self.plots.frame_image(image, trace, self.aperture_half, self.buffer_cols, self.background_cols, frame)

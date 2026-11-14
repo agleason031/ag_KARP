@@ -77,8 +77,16 @@ DEFAULTS = {
         "zeroth_pad": 10, # "auto": unbinned rows added on each side of a band
     },
     "trace": {
+        # Which star to trace when there are several in the slit. In order of precedence:
+        # an interactive pick (python -m karp config.toml --pick), cols[<object>], the
+        # object's earlier pick (trace_choice.json in its output folder), col, then select.
         "order": 3, # Polynomial order of the trace fit
-        "col": None, # Starting column for the trace search, unbinned CCD column (default: brightest column)
+        "select": "center", # No column given: "center" (the star nearest slit_center) or
+                            # "brightest" (the brightest column; KARP 1.0's only choice)
+        "slit_center": None, # Unbinned CCD column of the slit center for select = "center"
+                             # (default: the middle of the frame)
+        "col": None, # Starting column for the trace search for every object, unbinned CCD column
+        "cols": {}, # Per object: {name = column}, name as in [frames] objects, unbinned CCD columns
     },
     "extraction": {
         # Widths across the slit in arcsec (converted to pixels with [detector] pixel_scale and
@@ -224,6 +232,17 @@ def merge(user):
         raise ConfigError('[fluxcal] standard should be "auto" or an object name')
     if cfg["fluxcal"]["reference"] is not None and cfg["fluxcal"]["standard"] == "auto":
         raise ConfigError("[fluxcal] reference needs standard = the OBJNAME of the standard star")
+
+    tr = cfg["trace"]
+    if tr["select"] not in ("center", "brightest"):
+        raise ConfigError('[trace] select should be "center" or "brightest"')
+    column = lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0
+    for key in ("col", "slit_center"):
+        if tr[key] is not None and not column(tr[key]):
+            raise ConfigError(f"[trace] {key} should be an unbinned CCD column (an integer >= 0)")
+    for name, value in tr["cols"].items():
+        if not column(value):
+            raise ConfigError(f"[trace] cols: {name} should be an unbinned CCD column (an integer >= 0)")
 
     zo = cfg["flat"]["zeroth_order"]
     if not (zo in ("auto", "none") or (isinstance(zo, list) and all(

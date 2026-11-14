@@ -88,6 +88,28 @@ class Plotter:
 
     # --- per-frame diagnostics -----------------------------------------------
 
+    def slit_sources(self, profile, sources, chosen, center, frame):
+        """The median profile across the slit with the stars found in it, numbered as --pick lists them."""
+        cols = np.arange(len(profile))
+        fig, ax = plt.subplots(figsize=WIDE)
+        ax.plot(cols, profile, color="black", lw=0.8)
+        ax.axvline(center, color="gray", ls=":", lw=1, label=f"slit center ({center})")
+        ax.axvline(chosen, color="C0", lw=1.5, alpha=0.6, label=f"trace start ({chosen})")
+        for i, (c, peak) in enumerate(sources, start=1):
+            ax.plot(c, peak, "v", color="C3", ms=8)
+            ax.annotate(f"{i}: {c}", (c, peak), textcoords="offset points", xytext=(0, 8), ha="center",
+                        color="C3")
+        finite = profile[np.isfinite(profile)]
+        if finite.size:
+            top = max([p for _, p in sources] + [finite.max()])
+            ax.set_ylim(np.percentile(finite, 1) - 0.05 * top, 1.2 * top)
+        ax.set_xlabel("Column (binned)")
+        ax.set_ylabel("Median across rows, background removed (e-)")
+        ax.set_title(f"Stars in the slit, frame {frame}: {len(sources)} found")
+        ax.legend(loc="upper right")
+        fig.tight_layout()
+        _save(fig, self.out.frame_file(frame, "slit.png"))
+
     def trace(self, fits, trace, used, frame):
         """Gaussian centers with the trace fit, the residuals (rejected rows marked), and the profile width."""
         rows = np.arange(len(trace))

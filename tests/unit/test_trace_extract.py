@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from karp.extract import extract, variance_image
-from karp.trace import fit_trace
+from karp.trace import _fit_row, find_slit_sources, fit_trace, nearest_source
 
 N_ROWS, N_COLS = 600, 160
 STAR, SKY, READNOISE, PSF_SIGMA = 20000.0, 300.0, 5.7, 2.0
@@ -66,3 +66,41 @@ def test_optimal_extraction_rejects_cosmic_rays(frame):
         assert opt["n_rejected"][r] >= 1
         assert abs(opt["flux"][r] - STAR) < 5 * np.sqrt(opt["var"][r])
         assert box["flux"][r] - STAR > 20000  # boxcar keeps the cosmic ray
+
+
+def test_row_without_a_peak_is_skipped():
+    """A row fainter in the aperture than in the background windows gives NaN, not an error."""
+    x = np.arange(10, 20)
+    assert np.isnan(_fit_row(x, np.full(10, 50.0), np.full(20, 100.0), 15)).all()  # amplitude guess < 0
+    assert np.isnan(_fit_row(x, np.full(10, -300.0), np.full(20, -300.0), 15)).all()  # no peak, background < -100
+    y = 1000 * np.exp(-(x - 15.0) ** 2 / 8) - 300.0  # a real peak on a very negative background
+    assert _fit_row(x, y, np.full(20, -300.0), 15)[1] == pytest.approx(15.0, abs=0.01)
+
+
+@pytest.fixture(scope="module")
+def two_stars():
+    """A faint target near the slit center and a 10x brighter star far from it."""
+    rng = np.random.default_rng(2)
+    n_rows, n_cols = 600, 400
+    cols = np.arange(n_cols)
+    model = np.full((n_rows, n_cols), SKY)
+    for col, flux in ((190.0, 3000.0), (330.0, 30000.0)):
+        prof = np.exp(-(cols - col) ** 2 / (2 * PSF_SIGMA ** 2))
+        model += flux * prof / prof.sum()
+    return rng.poisson(model).astype(float) + rng.normal(0, READNOISE, model.shape)
+
+
+def test_slit_sources_and_nearest_to_center(two_stars):
+    _, sources = find_slit_sources(two_stars, (2, 2))
+    assert [c for c, _ in sources] == [190, 330]
+    assert sources[1][1] > 5 * sources[0][1]
+    assert nearest_source(sources, 200)[0] == 190
+    assert nearest_source([], 200) is None
+
+
+def test_trace_follows_the_chosen_star(two_stars):
+    args = (two_stars, APERTURE_HALF, BUFFER, BACKGROUND, 1, (2, 2))
+    _, brightest, _, _ = fit_trace(*args)
+    _, chosen, _, _ = fit_trace(*args, start_col=192)
+    assert np.allclose(brightest, 330, atol=0.2)
+    assert np.allclose(chosen, 190, atol=0.2)

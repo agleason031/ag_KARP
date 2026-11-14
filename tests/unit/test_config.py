@@ -14,6 +14,14 @@ def test_defaults_filled_in():
     assert cfg["target"]["ra"] is None
 
 
+def test_trace_cols_table(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text('[paths]\nraw_dir = "a"\noutput_dir = "b"\n[trace.cols]\nj0653p0239 = 952\n"2005 GO136" = 900\n')
+    cfg = load_config(path)
+    assert cfg["trace"]["cols"] == {"j0653p0239": 952, "2005 GO136": 900}
+    assert cfg["trace"]["select"] == "center"
+
+
 def test_int_accepted_for_float():
     cfg = merge({**PATHS, "extraction": {"aperture_arcsec": 8}})
     assert cfg["extraction"]["aperture_arcsec"] == 8.0
@@ -36,6 +44,11 @@ def test_int_accepted_for_float():
     ({**PATHS, "fluxcal": {"reference": "star.txt"}}, "reference needs standard"),
     ({**PATHS, "detector": {"amp_data": [[0, 512], [512, 1024]]}}, "together"),
     ({**PATHS, "extraction": {"aperture_arcsec": 0.0}}, "must be > 0"),
+    ({**PATHS, "trace": {"select": "nearest"}}, "select"),
+    ({**PATHS, "trace": {"col": 952.5}}, "col should be"),
+    ({**PATHS, "trace": {"slit_center": -1}}, "slit_center should be"),
+    ({**PATHS, "trace": {"cols": {"J0653": "952"}}}, "cols: J0653"),
+    ({**PATHS, "trace": {"cols": [952]}}, "should be dict"),
 ])
 def test_bad_settings_rejected(user, message):
     with pytest.raises(ConfigError, match=message):
